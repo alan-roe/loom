@@ -40,7 +40,7 @@ The Local Execution Backend (`loom-server-local`) provides a `K8sClient` trait i
 
 ### Goals
 - Enable full Loom functionality on localhost without Kubernetes
-- Maintain API compatibility with existing `Provisioner` code (zero changes needed)
+- Maintain API compatibility with existing `Provisioner` code (zero changes needed to Provisioner)
 - Support macOS as the primary target platform
 - Run the same `loom` CLI that K8s weavers run
 
@@ -56,59 +56,82 @@ The Local Execution Backend (`loom-server-local`) provides a `K8sClient` trait i
 ## 2. Domain Model
 
 ```rust
-// Reuse existing Loom types from loom-server-weaver and loom-server-k8s
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use chrono::{DateTime, Utc};
+use futures::Stream;
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::Mutex;
+
+// Import types via re-exports from loom-server-k8s (NOT directly from k8s-openapi)
+use loom_server_k8s::{
+    K8sClient, K8sError, LogOptions, LogStream, AttachedProcess, TokenReviewResult,
+    Pod, PodSpec, PodStatus, Container, Namespace,
+};
+// These must come from k8s-openapi directly (not re-exported)
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
+
 use loom_server_weaver::types::{WeaverId, WeaverStatus};
-use loom_server_k8s::{K8sClient, K8sError, LogOptions, LogStream, AttachedProcess, TokenReviewResult};
-use k8s_openapi::api::core::v1::{Pod, Namespace};
 
 /// K8s Pod → Local Process (internal implementation detail)
 pub struct LocalWeaver {
-    pub id: WeaverId,              // Same UUID7 identifier
-    pub pid: u32,                  // OS process ID
-    pub working_dir: PathBuf,      // ~/loom-weavers/weaver-{id}/
-    pub status: WeaverStatus,      // Reused from loom-server-weaver
-    pub metadata: WeaverMetadata,  // Stored in .loom/metadata.json
-    pub pty_master: PtyMaster,     // For exec_attach
+    pub id: WeaverId,
+    pub pid: u32,
+    pub working_dir: PathBuf,
+    pub status: WeaverStatus,
+    pub metadata: WeaverMetadata,
+    pub tmux_session: String,  // tmux session name for attach
 }
 
 /// K8s Labels/Annotations → Metadata file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeaverMetadata {
     pub id: WeaverId,
-    pub owner_user_id: String,     // Matches existing Weaver struct
-    pub org_id: String,            // Matches existing Weaver struct
-    pub image: String,             // For reference only (not used locally)
-    pub tags: HashMap<String, String>,  // Matches existing Weaver struct
+    pub owner_user_id: String,
+    pub org_id: String,
+    pub image: String,
+    pub tags: HashMap<String, String>,
     pub lifetime_hours: u32,
     pub created_at: DateTime<Utc>,
 }
 
-/// The trait we're implementing - imported from loom-server-k8s
-/// (shown here for reference, do not redefine)
-#[async_trait]
-pub trait K8sClient: Send + Sync {
-    async fn create_pod(&self, namespace: &str, pod: Pod) -> Result<Pod, K8sError>;
-    async fn delete_pod(&self, name: &str, namespace: &str, grace_period_seconds: u32) -> Result<(), K8sError>;
-    async fn list_pods(&self, namespace: &str, label_selector: &str) -> Result<Vec<Pod>, K8sError>;
-    async fn get_pod(&self, name: &str, namespace: &str) -> Result<Pod, K8sError>;
-    async fn get_namespace(&self, name: &str) -> Result<Namespace, K8sError>;
-    async fn stream_logs(&self, name: &str, namespace: &str, container: &str, opts: LogOptions) -> Result<LogStream, K8sError>;
-    async fn exec_attach(&self, name: &str, namespace: &str, container: &str) -> Result<AttachedProcess, K8sError>;
-    async fn validate_token(&self, token: &str, audiences: &[&str]) -> Result<TokenReviewResult, K8sError>;
+impl WeaverMetadata {
+    /// Convert to K8s-style labels BTreeMap
+    pub fn to_labels(&self) -> BTreeMap<String, String> {
+        let mut labels = BTreeMap::new();
+        labels.insert("loom.dev/managed".into(), "true".into());
+        labels.insert("loom.dev/weaver-id".into(), self.id.to_string());
+        labels.insert("loom.dev/owner-user-id".into(), self.owner_user_id.clone());
+        labels
+    }
+
+    /// Convert to K8s-style annotations BTreeMap
+    pub fn to_annotations(&self) -> BTreeMap<String, String> {
+        let mut annotations = BTreeMap::new();
+        annotations.insert("loom.dev/tags".into(), serde_json::to_string(&self.tags).unwrap_or_default());
+        annotations.insert("loom.dev/lifetime-hours".into(), self.lifetime_hours.to_string());
+        annotations
+    }
 }
 
 /// Our implementation - parallel to KubeClient in loom-server-k8s
-#[derive(Debug)]
 pub struct LocalClient {
     base_dir: PathBuf,
     weavers: Arc<Mutex<HashMap<WeaverId, LocalWeaver>>>,
     config: LocalConfig,
 }
 
+#[derive(Debug, Clone)]
 pub struct LocalConfig {
     pub base_dir: PathBuf,
-    pub command: String,           // Default: "loom"
-    pub server_url: String,        // Injected as LOOM_SERVER_URL env var
+    pub command: String,
+    pub server_url: String,
 }
 ```
 
@@ -119,36 +142,39 @@ pub struct LocalConfig {
 - Only one process per WeaverId (enforced by PID file locking)
 - Working directory must exist before process spawn
 - Metadata file must be written atomically (write to temp, rename)
-- Process cleanup must remove both process and directory
-- PTY master must be retained for later `exec_attach` calls
-- **Startup reconciliation**: On LocalClient init, scan existing weaver directories, read PIDs, verify processes are alive, reconcile in-memory state with filesystem
+- Process cleanup must remove both process, tmux session, and directory
+- Each weaver runs inside a tmux session (matches K8s behavior, survives server restart)
+- **Startup reconciliation**: On LocalClient init, scan existing weaver directories, verify tmux sessions exist and processes are alive, reconcile in-memory state with filesystem
 
 ---
 
 ## 4. Behaviors
 
 ### Create Weaver (implements `create_pod`)
-**Given** a CreateWeaverRequest with id, env vars, and optional repo URL
+**Given** a Pod spec with labels, annotations, and container config
 **When** `create_pod` is called
 **Then**
+  - Extract weaver ID from `metadata.labels["loom.dev/weaver-id"]`
   - Create directory `~/loom-weavers/weaver-{id}/workspace/`
   - Write metadata to `.loom/metadata.json`
-  - If repo specified, `git clone` into workspace
-  - Spawn `loom` CLI WITH PTY via `portable-pty`
-  - Inject `LOOM_SERVER_URL` env var (so loom can reach LLM proxy)
-  - Redirect stdout/stderr to `.loom/stdout.log` and `.loom/stderr.log`
-  - Write PID to `.loom/pid`
-  - Store PTY master handle in `LocalWeaver` for later `exec_attach`
-  - Return Pod-shaped response with status Pending→Running
+  - If `LOOM_REPO` env var in pod spec, `git clone` into workspace
+  - Create tmux session: `tmux new-session -d -s weaver-{id} -c {workspace_dir}`
+  - Configure tmux logging: `tmux pipe-pane -t weaver-{id} "cat >> .loom/output.log"`
+  - Run loom CLI in tmux: `tmux send-keys -t weaver-{id} "LOOM_SERVER_URL={url} loom" Enter`
+  - Write tmux session PID to `.loom/pid`
+  - Store tmux session name in `LocalWeaver` for later `exec_attach`
+  - Return Pod with status.phase = "Running"
+  - **Note**: Provisioner ignores the return value and polls via `get_pod` separately
 
 ### Get Weaver Status (implements `get_pod`)
-**Given** a weaver ID
+**Given** a pod name (format: `weaver-{uuid}`)
 **When** `get_pod` is called
 **Then**
+  - Parse WeaverId from pod name
   - Read PID from `.loom/pid`
   - Check if process is alive (`kill -0 $pid`)
-  - Map to WeaverStatus: Running if alive, Succeeded/Failed if exited
-  - Return Pod-shaped response with metadata from `.loom/metadata.json`
+  - Map to phase: "Running" if alive, "Succeeded" if exited 0, "Failed" if exited non-zero
+  - Return Pod with all required fields populated (see Minimum Pod Fields)
 
 ### List Weavers (implements `list_pods`)
 **Given** a label selector (e.g., `loom.dev/managed=true`)
@@ -156,128 +182,232 @@ pub struct LocalConfig {
 **Then**
   - Scan `~/loom-weavers/weaver-*/` directories
   - Filter by metadata fields matching selector (simple `key=value` parsing)
-  - Return list of Pod-shaped responses
+  - Return list of Pod objects
 
 ### Delete Weaver (implements `delete_pod`)
-**Given** a weaver ID and grace period
+**Given** a pod name and grace period
 **When** `delete_pod` is called
 **Then**
-  - Read PID from `.loom/pid`
-  - Send SIGTERM, wait grace period
-  - Send SIGKILL if still alive
-  - Remove directory `~/loom-weavers/weaver-{id}/`
+  - Parse WeaverId from pod name
+  - Kill tmux session: `tmux kill-session -t weaver-{id}` (sends SIGHUP to all processes)
+  - Wait grace period seconds for clean shutdown
+  - If directory still exists, remove `~/loom-weavers/weaver-{id}/`
   - Remove from in-memory `weavers` map
 
 ### Stream Logs (implements `stream_logs`)
-**Given** a weaver ID
+**Given** a pod name
 **When** `stream_logs` is called
 **Then**
-  - Tail `.loom/stdout.log` and `.loom/stderr.log`
-  - Return async stream of log lines (matching K8s LogStream type)
+  - Tail `.loom/output.log` (fed by tmux pipe-pane, container param is ignored)
+  - Return `Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>`
 
 ### Attach Terminal (implements `exec_attach`)
-**Given** a weaver ID
+**Given** a pod name
 **When** `exec_attach` is called
 **Then**
-  - Retrieve PTY master from in-memory `LocalWeaver`
-  - Return AttachedProcess with bidirectional streams to PTY
-  - Note: PTY was created at spawn time; this connects to existing session
+  - Parse WeaverId from pod name
+  - Spawn `tmux attach-session -t weaver-{id}` with PTY via `portable-pty`
+  - Return `AttachedProcess { stdin, stdout }` connected to PTY
+  - **Note**: tmux session survives server restart; attach always works for live weavers
 
 ### Validate Token (implements `validate_token`)
-**Given** any token
-**When** `validate_token` is called
+**Given** any token and audiences slice
+**When** `validate_token(token: &str, audiences: &[&str])` is called
 **Then**
-  - Return success (no-op for local development)
+  - Ignore both `token` and `audiences` parameters (local dev has no auth)
+  - Return `TokenReviewResult::authenticated("local-user", vec![], HashMap::new(), vec![])`
 
 ### Get Namespace (implements `get_namespace`)
-**Given** namespace name
+**Given** namespace name (ignored)
 **When** `get_namespace` is called
 **Then**
-  - Check if `~/loom-weavers/` exists (create if not)
-  - Return Namespace-shaped response
+  - Ensure `~/loom-weavers/` exists (create if not)
+  - Return `Namespace::default()`
 
 ---
 
-## 5. Success Criteria
+## 5. Minimum Pod Fields Required
+
+The Provisioner reads these fields from Pod objects. LocalClient must populate them:
+
+```rust
+Pod {
+    metadata: ObjectMeta {
+        name: Some(format!("weaver-{}", id)),           // REQUIRED
+        labels: Some(BTreeMap from {
+            "loom.dev/managed" => "true",               // REQUIRED for list filtering
+            "loom.dev/weaver-id" => id.to_string(),     // REQUIRED for ID parsing
+            "loom.dev/owner-user-id" => owner,          // optional, defaults ""
+        }),
+        annotations: Some(BTreeMap from {
+            "loom.dev/tags" => json_string,             // optional, defaults "{}"
+            "loom.dev/lifetime-hours" => "4",           // optional, defaults "4"
+        }),
+        creation_timestamp: Some(Time(created_at)),     // optional, defaults now
+        deletion_timestamp: None,                        // set for Terminating status
+        ..Default::default()
+    },
+    spec: Some(PodSpec {
+        containers: vec![Container {
+            image: Some(image_string),                  // REQUIRED for weaver.image
+            ..Default::default()
+        }],
+        ..Default::default()
+    }),
+    status: Some(PodStatus {
+        phase: Some("Running".to_string()),             // REQUIRED
+        message: Some("...".to_string()),               // optional, used on Failed
+        ..Default::default()
+    }),
+}
+```
+
+---
+
+## 6. Success Criteria
 
 - [ ] All 8 K8sClient trait methods implemented
 - [ ] Existing Provisioner works without modification
-- [ ] Weaver lifecycle works: create → attach → delete
+- [ ] Weaver lifecycle works: create → get → attach → delete
 - [ ] Loom CLI in weaver can reach loom-server LLM proxy
-- [ ] Log streaming works with `tail -f` equivalent
+- [ ] Log streaming returns valid `LogStream` type
 - [ ] TTL cleanup finds and removes expired weavers
-- [ ] Process isolation: each weaver in separate directory
-- [ ] Graceful shutdown: SIGTERM → wait → SIGKILL
-- [ ] Startup reconciliation recovers existing weavers
+- [ ] Process isolation: each weaver in separate tmux session + directory
+- [ ] Graceful shutdown: tmux kill-session → wait → cleanup
+- [ ] Startup reconciliation recovers existing weavers (tmux sessions survive server restart)
+- [ ] Attach works after server restart (tmux session persistence)
 
 ---
 
-## 6. Boundaries (for AI agents)
+## 7. Boundaries (for AI agents)
 
 ✅ **Always do**:
-- Run tests before committing changes
+- Run `cargo test -p loom-server-local` before committing
+- Run `cargo clippy -p loom-server-local` and fix warnings
 - Verify trait implementation matches K8sClient exactly
-- Test on macOS
 
 ⚠️ **Ask first**:
-- Adding new crate dependencies
+- Adding new crate dependencies beyond those listed
 - Any changes to `loom-server-k8s` trait definitions
 - Any changes to Provisioner code
 
 🚫 **Never**:
-- Modify files outside `crates/loom-server-local/`
+- Modify files outside `crates/loom-server-local/` (except wiring in api.rs and config)
 - Add container/Docker dependencies
 - Modify LLM proxy layer
+- Use `unsafe` without explicit approval
 
 ---
 
-## 7. Configuration & Dependencies
+## 8. Configuration & Dependencies
 
 ### Wiring into loom-server
 
-The swap happens in `crates/loom-server/src/api.rs` in `initialize_weaver_infrastructure()`:
+**Two locations** in `crates/loom-server/src/api.rs` need modification (lines ~487 and ~549):
 
 ```rust
-// Current (K8s):
-let k8s_client: Arc<dyn K8sClient> = Arc::new(KubeClient::new().await?);
+use loom_server_local::LocalClient;
 
-// With LocalClient (controlled by env var):
-let k8s_client: Arc<dyn K8sClient> = if std::env::var("LOOM_LOCAL_WEAVERS").is_ok() {
-    Arc::new(LocalClient::new(local_config)?)
+// Replace KubeClient::new() with conditional:
+let k8s_client: Arc<dyn K8sClient> = if config.weaver.backend == "local" {
+    Arc::new(LocalClient::new(&config.weaver)?)
 } else {
     Arc::new(KubeClient::new().await?)
 };
+```
+
+**Config addition** in `crates/loom-server-config/src/sections/weaver.rs`:
+
+```rust
+// Add to WeaverConfigLayer:
+pub backend: Option<String>,  // "k8s" (default) or "local"
+
+// Add to WeaverConfig:
+pub backend: String,
+
+// Default:
+backend: self.backend.unwrap_or_else(|| "k8s".to_string()),
+```
+
+### Workspace Setup
+
+**Root Cargo.toml** additions:
+```toml
+# In [workspace.members]:
+"crates/loom-server-local",
+
+# In [workspace.dependencies]:
+loom-server-local = { path = "crates/loom-server-local" }
+```
+
+**loom-server/Cargo.toml** addition:
+```toml
+loom-server-local = { workspace = true }
+```
+
+### Crate Dependencies
+
+```toml
+[package]
+name = "loom-server-local"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "process", "sync"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# PTY handling
+portable-pty = "0.8"
+
+# Process signals (Unix) - for checking if processes are alive
+nix = { version = "0.27", features = ["signal", "process"] }
+
+# Note: tmux is a runtime dependency (not a Rust crate)
+# macOS: brew install tmux
+# Linux: apt install tmux
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+
+# Streaming types
+bytes = "1"
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Sibling crates (for trait and types)
+loom-server-k8s = { workspace = true }
+loom-server-weaver = { workspace = true }
+
+# Note: k8s-openapi NOT needed as direct dep - use re-exports from loom-server-k8s
+# Exception: ObjectMeta and Time need direct import
+k8s-openapi = { workspace = true }
 ```
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LOOM_LOCAL_WEAVERS` | Enable local backend (presence enables) | unset |
 | `LOOM_LOCAL_WEAVERS_DIR` | Base directory for weaver workspaces | `~/loom-weavers` |
-| `LOOM_LOCAL_COMMAND` | Command to run in weaver | `loom` |
 
-### Crate Dependencies
+### Runtime Dependencies
 
-```toml
-[dependencies]
-tokio = { version = "1", features = ["full", "process"] }
-portable-pty = "0.8"
-nix = { version = "0.27", features = ["signal", "process"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-chrono = { version = "0.4", features = ["serde"] }
-tracing = "0.1"
-
-# Import trait from sibling crate
-loom-server-k8s = { path = "../loom-server-k8s" }
-loom-server-weaver = { path = "../loom-server-weaver" }
-k8s-openapi = { version = "0.20", features = ["v1_28"] }
-```
+| Dependency | Required | Installation |
+|------------|----------|--------------|
+| `tmux` | Yes | macOS: `brew install tmux`, Linux: `apt install tmux` |
+| `git` | Optional | For `LOOM_REPO` cloning |
 
 ---
 
-## 8. Implementation Notes
+## 9. Implementation Notes
 
 ### Directory Structure
 ```
@@ -285,71 +415,86 @@ k8s-openapi = { version = "0.20", features = ["v1_28"] }
 ├── weaver-{uuid7}/
 │   ├── .loom/
 │   │   ├── metadata.json    # Labels, annotations, timestamps
-│   │   ├── pid              # Process ID
-│   │   ├── stdout.log       # Captured stdout
-│   │   └── stderr.log       # Captured stderr
+│   │   ├── pid              # tmux server PID
+│   │   └── output.log       # Captured output (via tmux pipe-pane)
 │   └── workspace/           # Git clone or working files
 ```
 
 ### What Runs in a Weaver
 
-In K8s, weavers run: `tmux new-session -A -s loom "loom"`
+Both K8s and local weavers use tmux for session persistence:
 
-For local, we simplify (no tmux needed since we have direct PTY):
-```rust
-Command::new("loom")
-    .current_dir(&workspace_dir)
-    .env("LOOM_SERVER_URL", &config.server_url)
-    .spawn_pty()
-```
-
-The `loom` CLI will connect back to loom-server at `LOOM_SERVER_URL` for LLM proxy access.
-
-### K8s Type Compatibility
-
-The `k8s_openapi` types (Pod, Namespace, etc.) are just structs - they can be constructed without K8s:
+**K8s**: `tmux new-session -A -s loom "loom"`
+**Local**: Same pattern, managed via `std::process::Command`
 
 ```rust
-fn local_weaver_to_pod(weaver: &LocalWeaver) -> Pod {
-    Pod {
-        metadata: ObjectMeta {
-            name: Some(weaver.id.as_k8s_name()),
-            labels: Some(weaver.metadata.to_labels()),
-            creation_timestamp: Some(Time(weaver.metadata.created_at)),
-            ..Default::default()
-        },
-        status: Some(PodStatus {
-            phase: Some(weaver.status.to_k8s_phase()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
+use std::process::Command;
+
+// Create detached tmux session
+Command::new("tmux")
+    .args(["new-session", "-d", "-s", &session_name, "-c", &workspace_dir])
+    .status()?;
+
+// Enable logging via pipe-pane
+Command::new("tmux")
+    .args(["pipe-pane", "-t", &session_name, &format!("cat >> {}", log_path)])
+    .status()?;
+
+// Start loom CLI inside the session
+Command::new("tmux")
+    .args(["send-keys", "-t", &session_name, &format!("LOOM_SERVER_URL={} loom", server_url), "Enter"])
+    .status()?;
+
+// For exec_attach: spawn `tmux attach-session -t {session}` with PTY
+let pair = pty_system.openpty(PtySize::default())?;
+let cmd = CommandBuilder::new("tmux");
+cmd.args(["attach-session", "-t", &session_name]);
+let child = pair.slave.spawn_command(cmd)?;
+// pair.master returned as AttachedProcess
 ```
 
 ### Error Mapping
 
-Map local errors to `K8sError` variants:
-
-| Local Error | K8sError Mapping |
+| Local Error | K8sError Variant |
 |-------------|------------------|
-| Directory not found | `K8sError::NotFound` |
-| Process spawn failed | `K8sError::ApiError` |
-| PID file missing | `K8sError::NotFound` |
-| Signal send failed | `K8sError::ApiError` |
+| Directory not found | `K8sError::PodNotFound { name }` |
+| tmux session create failed | `K8sError::ApiError { message }` |
+| PID file missing | `K8sError::PodNotFound { name }` |
+| tmux kill-session failed | `K8sError::ApiError { message }` |
+| Log file read error | `K8sError::StreamError { message }` |
+| tmux attach failed | `K8sError::AttachError { message }` |
+| Namespace dir missing | `K8sError::NamespaceNotFound { name }` |
 
 ### Label Selector Parsing
 
-Support simple `key=value` selectors only (covers 90% of use cases):
+Support simple `key=value` selectors (what Provisioner uses):
 
 ```rust
 fn matches_selector(metadata: &WeaverMetadata, selector: &str) -> bool {
+    if selector.is_empty() {
+        return true;
+    }
+    let labels = metadata.to_labels();
     selector.split(',').all(|part| {
         if let Some((key, value)) = part.split_once('=') {
-            metadata.labels().get(key) == Some(&value.to_string())
+            labels.get(key).map(|v| v == value).unwrap_or(false)
         } else {
-            true // ignore malformed parts
+            true
         }
     })
 }
+```
+
+### Crate Structure
+
+```
+crates/loom-server-local/
+├── Cargo.toml
+└── src/
+    ├── lib.rs              # Re-exports LocalClient
+    ├── client.rs           # LocalClient impl K8sClient
+    ├── config.rs           # LocalConfig
+    ├── weaver.rs           # LocalWeaver, WeaverMetadata
+    ├── pod_builder.rs      # local_weaver_to_pod conversion
+    └── error.rs            # Error mapping to K8sError
 ```
