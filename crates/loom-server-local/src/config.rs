@@ -8,6 +8,7 @@ pub struct LocalConfig {
 	pub base_dir: PathBuf,
 	pub default_image: String,
 	pub server_url: String,
+	pub loom_command: String,
 }
 
 impl LocalConfig {
@@ -22,6 +23,7 @@ impl LocalConfig {
 			base_dir,
 			default_image: "loom:latest".to_string(),
 			server_url: server_url.into(),
+			loom_command: "loom".to_string(),
 		}
 	}
 
@@ -32,6 +34,11 @@ impl LocalConfig {
 
 	pub fn with_default_image(mut self, image: impl Into<String>) -> Self {
 		self.default_image = image.into();
+		self
+	}
+
+	pub fn with_loom_command(mut self, command: impl Into<String>) -> Self {
+		self.loom_command = command.into();
 		self
 	}
 

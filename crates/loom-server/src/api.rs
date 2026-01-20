@@ -19,7 +19,7 @@ use loom_server_geoip::GeoIpService;
 use loom_server_github_app::{GithubAppClient, GithubAppConfig};
 use loom_server_jobs::{JobRepository, JobScheduler};
 use loom_server_k8s::{K8sClient, KubeClient};
-use loom_server_local::LocalClient;
+use loom_server_local::{LocalClient, LocalConfig};
 use loom_server_llm_service::LlmService;
 use loom_server_search_google_cse::CseClient;
 use loom_server_search_serper::SerperClient;
@@ -486,8 +486,9 @@ async fn initialize_weaver_infrastructure(config: &ServerConfig) -> WeaverInfras
 	}
 
 	let k8s_client: Arc<dyn K8sClient> = if config.weaver.backend == "local" {
-		let server_url = config.http.base_url.clone();
-		match LocalClient::new(server_url).await {
+		let local_config = LocalConfig::new(&config.http.base_url)
+			.with_loom_command(&config.weaver.loom_command);
+		match LocalClient::with_config(local_config).await {
 			Ok(client) => Arc::new(client),
 			Err(e) => {
 				tracing::warn!(
@@ -566,8 +567,9 @@ async fn initialize_weaver_infrastructure(config: &ServerConfig) -> WeaverInfras
 	};
 
 	let provisioner_client: Arc<dyn K8sClient> = if config.weaver.backend == "local" {
-		let server_url = config.http.base_url.clone();
-		match LocalClient::new(server_url).await {
+		let local_config = LocalConfig::new(&config.http.base_url)
+			.with_loom_command(&config.weaver.loom_command);
+		match LocalClient::with_config(local_config).await {
 			Ok(client) => Arc::new(client),
 			Err(e) => {
 				tracing::warn!(error = %e, "Failed to create provisioner local client");

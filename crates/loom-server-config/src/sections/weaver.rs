@@ -89,6 +89,8 @@ pub struct WeaverConfigLayer {
 	pub audit_buffer_max_bytes: Option<u64>,
 	/// Execution backend: "k8s" (default) or "local"
 	pub backend: Option<String>,
+	/// Command to invoke the loom CLI (default: "loom")
+	pub loom_command: Option<String>,
 }
 
 impl std::fmt::Debug for WeaverConfigLayer {
@@ -111,6 +113,7 @@ impl std::fmt::Debug for WeaverConfigLayer {
 			.field("audit_batch_interval_ms", &self.audit_batch_interval_ms)
 			.field("audit_buffer_max_bytes", &self.audit_buffer_max_bytes)
 			.field("backend", &self.backend)
+			.field("loom_command", &self.loom_command)
 			.finish()
 	}
 }
@@ -170,6 +173,9 @@ impl WeaverConfigLayer {
 		if other.backend.is_some() {
 			self.backend = other.backend;
 		}
+		if other.loom_command.is_some() {
+			self.loom_command = other.loom_command;
+		}
 	}
 
 	/// Resolves this layer into a runtime configuration.
@@ -215,6 +221,7 @@ impl WeaverConfigLayer {
 			audit_batch_interval_ms: self.audit_batch_interval_ms.unwrap_or(100),
 			audit_buffer_max_bytes: self.audit_buffer_max_bytes.unwrap_or(256 * 1024 * 1024),
 			backend: self.backend.unwrap_or_else(|| "k8s".to_string()),
+			loom_command: self.loom_command.unwrap_or_else(|| "loom".to_string()),
 		})
 	}
 }
@@ -247,6 +254,8 @@ pub struct WeaverConfig {
 	pub audit_buffer_max_bytes: u64,
 	/// Execution backend: "k8s" (default) or "local"
 	pub backend: String,
+	/// Command to invoke the loom CLI (default: "loom")
+	pub loom_command: String,
 }
 
 impl std::fmt::Debug for WeaverConfig {
@@ -269,6 +278,7 @@ impl std::fmt::Debug for WeaverConfig {
 			.field("audit_batch_interval_ms", &self.audit_batch_interval_ms)
 			.field("audit_buffer_max_bytes", &self.audit_buffer_max_bytes)
 			.field("backend", &self.backend)
+			.field("loom_command", &self.loom_command)
 			.finish()
 	}
 }
@@ -293,6 +303,7 @@ impl Default for WeaverConfig {
 			audit_batch_interval_ms: 100,
 			audit_buffer_max_bytes: 256 * 1024 * 1024,
 			backend: "k8s".to_string(),
+			loom_command: "loom".to_string(),
 		}
 	}
 }

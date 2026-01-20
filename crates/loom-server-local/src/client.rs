@@ -351,7 +351,8 @@ impl K8sClient for LocalClient {
 		}
 
 		let server_url = &self.config.server_url;
-		let cmd = format!("exec env {env_str}LOOM_SERVER_URL='{server_url}' loom");
+		let loom_command = &self.config.loom_command;
+		let cmd = format!("exec env {env_str}LOOM_SERVER_URL='{server_url}' {loom_command}");
 		session.send_keys(&cmd)?;
 
 		if let Some(pid) = session.get_pane_pid()? {
