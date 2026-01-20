@@ -48,3 +48,13 @@ Thumbs.db
 
 # Database files
 loom.db*
+
+# Local data (OAuth tokens, credentials)
+/data/
+
+# Environment files
+.env
+.env.*
+
+# Node.js dependencies
+node_modules/
