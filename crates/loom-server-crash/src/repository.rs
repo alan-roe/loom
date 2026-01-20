@@ -23,6 +23,7 @@ pub trait CrashRepository: Send + Sync {
 	async fn get_project_by_id(&self, id: ProjectId) -> Result<Option<CrashProject>>;
 	async fn get_project_by_slug(&self, org_id: OrgId, slug: &str) -> Result<Option<CrashProject>>;
 	async fn list_projects(&self, org_id: OrgId) -> Result<Vec<CrashProject>>;
+	async fn update_project(&self, project: &CrashProject) -> Result<()>;
 	async fn delete_project(&self, id: ProjectId) -> Result<bool>;
 
 	// Issue operations
@@ -207,6 +208,25 @@ impl CrashRepository for SqliteCrashRepository {
 		.await?;
 
 		rows.into_iter().map(TryInto::try_into).collect()
+	}
+
+	#[instrument(skip(self, project), fields(project_id = %project.id))]
+	async fn update_project(&self, project: &CrashProject) -> Result<()> {
+		sqlx::query(
+			r#"
+			UPDATE crash_projects
+			SET name = ?, auto_resolve_age_days = ?, updated_at = ?
+			WHERE id = ?
+			"#,
+		)
+		.bind(&project.name)
+		.bind(project.auto_resolve_age_days.map(|d| d as i32))
+		.bind(project.updated_at.to_rfc3339())
+		.bind(project.id.0.to_string())
+		.execute(&self.pool)
+		.await?;
+
+		Ok(())
 	}
 
 	#[instrument(skip(self), fields(project_id = %id))]

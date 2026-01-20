@@ -6,10 +6,36 @@
 # Observability Suite Implementation Plan
 
 **Status:** In Progress\
-**Version:** 1.2\
-**Last Updated:** 2026-01-20
+**Version:** 1.3\
+**Last Updated:** 2026-01-21
 
 ### Recent Progress
+
+**2026-01-21:** Added project and issue management endpoints ✅ DEPLOYED
+- Implemented remaining endpoints from crash-system spec Section 9.4 and 9.7:
+  - `POST /api/crash/projects/{id}/issues/{id}/assign` — Assign issue to user
+  - `DELETE /api/crash/projects/{id}/issues/{id}` — Delete issue
+  - `GET /api/crash/projects/{id}` — Get project detail
+  - `PATCH /api/crash/projects/{id}` — Update project
+  - `DELETE /api/crash/projects/{id}` — Delete project
+- Added `update_project` method to CrashRepository trait and implementation
+- Added 22 new authorization tests covering all new endpoints
+- All endpoints verified working in production via curl
+- Commit: `d810c629`
+
+**2026-01-21:** Added unresolve and ignore issue lifecycle endpoints ✅ DEPLOYED
+- Implemented two new issue management endpoints from spec Section 9.4:
+  - `POST /api/crash/projects/{id}/issues/{id}/unresolve` — Unresolve issue
+  - `POST /api/crash/projects/{id}/issues/{id}/ignore` — Ignore issue
+- These complete the issue lifecycle as documented in `specs/crash-system.md`
+- Added 13 new authorization tests:
+  - 4 for resolve_issue (auth, membership, success, 404)
+  - 4 for unresolve_issue (auth, membership, success, 404)
+  - 4 for ignore_issue (auth, membership, success, 404)
+  - 1 for full issue lifecycle workflow
+- All endpoints verified working in production via curl
+- Issue lifecycle now fully supports: unresolved → resolved → unresolve, and ignore/unignore
+- Commit: `660cdb97`
 
 **2026-01-20:** Added proptest tests to loom-crash-core ✅
 - Added proptest tests for ID validation in `loom-crash-core`:
@@ -778,13 +804,20 @@ Reference pattern: [crates/loom-server/src/routes/analytics.rs](crates/loom-serv
 
 **Path:** `crates/loom-server/src/routes/`
 
-- [x] **`crash.rs`** — Crash analytics routes ✅ COMPLETED 2026-01-20
+- [x] **`crash.rs`** — Crash analytics routes ✅ COMPLETED 2026-01-21
   - `POST /api/crash/capture` — Ingest crash event ✅
   - `GET /api/crash/projects` — List projects ✅
   - `POST /api/crash/projects` — Create project ✅
+  - `GET /api/crash/projects/{id}` — Get project detail ✅
+  - `PATCH /api/crash/projects/{id}` — Update project ✅
+  - `DELETE /api/crash/projects/{id}` — Delete project ✅
   - `GET /api/crash/projects/{id}/issues` — List issues ✅
   - `POST /api/crash/projects/{id}/issues/{id}/resolve` — Resolve issue ✅
+  - `POST /api/crash/projects/{id}/issues/{id}/unresolve` — Unresolve issue ✅
+  - `POST /api/crash/projects/{id}/issues/{id}/ignore` — Ignore issue ✅
+  - `POST /api/crash/projects/{id}/issues/{id}/assign` — Assign issue to user ✅
   - `GET /api/crash/projects/{id}/issues/{id}` — Issue detail ✅
+  - `DELETE /api/crash/projects/{id}/issues/{id}` — Delete issue ✅
   - `GET /api/crash/projects/{id}/issues/{id}/events` — List events for issue ✅
   - `GET /api/crash/projects/{id}/releases` — List releases ✅
   - `POST /api/crash/projects/{id}/releases` — Create release ✅
@@ -1278,7 +1311,7 @@ Reference: [crates/loom-jobs/](crates/loom-jobs/)
 
 Reference pattern: [crates/loom-server/tests/authz_*_tests.rs](crates/loom-server/tests/)
 
-- [x] `tests/authz/crash.rs` — Crash endpoint authorization ✅ (52 tests: project CRUD, capture, batch capture, issues list, issue detail, issue events, releases CRUD, artifact CRUD)
+- [x] `tests/authz/crash.rs` — Crash endpoint authorization ✅ (74 tests: project CRUD, capture, batch capture, issues list, issue detail, issue events, issue lifecycle, issue assign/delete, releases CRUD, artifact CRUD)
 - [x] `tests/authz/crons.rs` — Cron endpoint authorization ✅ (29 tests including stream endpoint)
 - [x] `tests/authz/sessions.rs` — Session endpoint authorization ✅ (19 tests: session start/end, list, release health)
 

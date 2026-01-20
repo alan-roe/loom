@@ -2001,3 +2001,953 @@ async fn sdk_capture_with_revoked_api_key() {
 		"SDK capture with revoked API key should return 401"
 	);
 }
+
+// ============================================================================
+// Resolve Issue Tests
+// ============================================================================
+
+#[tokio::test]
+async fn resolve_issue_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "resolve-auth-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/resolve",
+				project_id, issue_id
+			),
+			None,
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Resolve issue without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn resolve_issue_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "resolve-membership-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	// User from org_b trying to resolve issue in org_a's project
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/resolve",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_b.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to resolve issue in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn resolve_issue_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "resolve-success-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/resolve",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to resolve issue"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["status"], "resolved");
+}
+
+#[tokio::test]
+async fn resolve_issue_returns_404_for_nonexistent_issue() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "resolve-404-test").await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/01938a6b-cdef-7000-8000-000000000000/resolve",
+				project_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Resolving nonexistent issue should return 404"
+	);
+}
+
+// ============================================================================
+// Unresolve Issue Tests
+// ============================================================================
+
+#[tokio::test]
+async fn unresolve_issue_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "unresolve-auth-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/unresolve",
+				project_id, issue_id
+			),
+			None,
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Unresolve issue without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn unresolve_issue_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "unresolve-membership-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	// User from org_b trying to unresolve issue in org_a's project
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/unresolve",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_b.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to unresolve issue in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn unresolve_issue_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "unresolve-success-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	// First resolve the issue
+	let _ = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/resolve",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+
+	// Then unresolve it
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/unresolve",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to unresolve issue"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["status"], "unresolved");
+}
+
+#[tokio::test]
+async fn unresolve_issue_returns_404_for_nonexistent_issue() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "unresolve-404-test").await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/01938a6b-cdef-7000-8000-000000000000/unresolve",
+				project_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Unresolving nonexistent issue should return 404"
+	);
+}
+
+// ============================================================================
+// Ignore Issue Tests
+// ============================================================================
+
+#[tokio::test]
+async fn ignore_issue_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "ignore-auth-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/ignore",
+				project_id, issue_id
+			),
+			None,
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Ignore issue without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn ignore_issue_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "ignore-membership-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	// User from org_b trying to ignore issue in org_a's project
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/ignore",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_b.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to ignore issue in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn ignore_issue_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "ignore-success-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/ignore",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to ignore issue"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["status"], "ignored");
+}
+
+#[tokio::test]
+async fn ignore_issue_returns_404_for_nonexistent_issue() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "ignore-404-test").await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/01938a6b-cdef-7000-8000-000000000000/ignore",
+				project_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Ignoring nonexistent issue should return 404"
+	);
+}
+
+#[tokio::test]
+async fn issue_lifecycle_full_workflow() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "lifecycle-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	// 1. Initially unresolved
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/issues/{}", project_id, issue_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["status"], "unresolved");
+
+	// 2. Resolve the issue
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/resolve",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::OK);
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["status"], "resolved");
+
+	// 3. Unresolve the issue
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/unresolve",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::OK);
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["status"], "unresolved");
+
+	// 4. Ignore the issue
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/ignore",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::OK);
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["status"], "ignored");
+
+	// 5. Unresolve (unignore) the issue
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/unresolve",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({}),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::OK);
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["status"], "unresolved");
+}
+
+// ============================================================================
+// Assign Issue Tests
+// ============================================================================
+
+#[tokio::test]
+async fn assign_issue_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "assign-auth-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/assign",
+				project_id, issue_id
+			),
+			None,
+			json!({"user_id": null}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Assign issue without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn assign_issue_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "assign-membership-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	// User from org_b trying to assign issue in org_a's project
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/assign",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_b.member),
+			json!({"user_id": null}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to assign issue in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn assign_issue_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "assign-success-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let user_id = app.fixtures.org_a.member.user.id.to_string();
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/assign",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({"user_id": user_id}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to assign issue"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["assigned_to"], user_id);
+}
+
+#[tokio::test]
+async fn assign_issue_can_unassign() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "unassign-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let user_id = app.fixtures.org_a.member.user.id.to_string();
+
+	// First assign
+	let _ = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/assign",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({"user_id": user_id}),
+		)
+		.await;
+
+	// Then unassign by passing null
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/{}/assign",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({"user_id": null}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to unassign issue"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert!(result["assigned_to"].is_null());
+}
+
+#[tokio::test]
+async fn assign_issue_returns_404_for_nonexistent_issue() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "assign-404-test").await;
+
+	let response = app
+		.post(
+			&format!(
+				"/api/crash/projects/{}/issues/01938a6b-cdef-7000-8000-000000000000/assign",
+				project_id
+			),
+			Some(&app.fixtures.org_a.member),
+			json!({"user_id": null}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Assigning nonexistent issue should return 404"
+	);
+}
+
+// ============================================================================
+// Delete Issue Tests
+// ============================================================================
+
+#[tokio::test]
+async fn delete_issue_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-issue-auth-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let response = app
+		.delete(
+			&format!(
+				"/api/crash/projects/{}/issues/{}",
+				project_id, issue_id
+			),
+			None,
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Delete issue without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn delete_issue_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-issue-membership-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	// User from org_b trying to delete issue in org_a's project
+	let response = app
+		.delete(
+			&format!(
+				"/api/crash/projects/{}/issues/{}",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_b.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to delete issue in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn delete_issue_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-issue-success-test").await;
+	let issue_id = create_test_issue(&app, &project_id).await;
+
+	let response = app
+		.delete(
+			&format!(
+				"/api/crash/projects/{}/issues/{}",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NO_CONTENT,
+		"Org member should be able to delete issue"
+	);
+
+	// Verify issue is gone
+	let response = app
+		.get(
+			&format!(
+				"/api/crash/projects/{}/issues/{}",
+				project_id, issue_id
+			),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_issue_returns_404_for_nonexistent_issue() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-issue-404-test").await;
+
+	let response = app
+		.delete(
+			&format!(
+				"/api/crash/projects/{}/issues/01938a6b-cdef-7000-8000-000000000000",
+				project_id
+			),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Deleting nonexistent issue should return 404"
+	);
+}
+
+// ============================================================================
+// Get Project Tests
+// ============================================================================
+
+#[tokio::test]
+async fn get_project_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "get-project-auth-test").await;
+
+	let response = app
+		.get(&format!("/api/crash/projects/{}", project_id), None)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Get project without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn get_project_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "get-project-membership-test").await;
+
+	// User from org_b trying to get project in org_a
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}", project_id),
+			Some(&app.fixtures.org_b.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to get project in another org"
+	);
+}
+
+#[tokio::test]
+async fn get_project_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "get-project-success-test").await;
+
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}", project_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to get project"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["id"], project_id);
+	assert_eq!(result["slug"], "get-project-success-test");
+}
+
+#[tokio::test]
+async fn get_project_returns_404_for_nonexistent_project() {
+	let app = TestApp::new().await;
+
+	let response = app
+		.get(
+			"/api/crash/projects/01938a6b-cdef-7000-8000-000000000000",
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Getting nonexistent project should return 404"
+	);
+}
+
+// ============================================================================
+// Update Project Tests
+// ============================================================================
+
+#[tokio::test]
+async fn update_project_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "update-project-auth-test").await;
+
+	let response = app
+		.patch(
+			&format!("/api/crash/projects/{}", project_id),
+			None,
+			json!({"name": "Updated Name"}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Update project without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn update_project_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "update-project-membership-test").await;
+
+	// User from org_b trying to update project in org_a
+	let response = app
+		.patch(
+			&format!("/api/crash/projects/{}", project_id),
+			Some(&app.fixtures.org_b.member),
+			json!({"name": "Updated Name"}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to update project in another org"
+	);
+}
+
+#[tokio::test]
+async fn update_project_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "update-project-success-test").await;
+
+	let response = app
+		.patch(
+			&format!("/api/crash/projects/{}", project_id),
+			Some(&app.fixtures.org_a.member),
+			json!({"name": "Updated Project Name"}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to update project"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert_eq!(result["name"], "Updated Project Name");
+}
+
+#[tokio::test]
+async fn update_project_returns_404_for_nonexistent_project() {
+	let app = TestApp::new().await;
+
+	let response = app
+		.patch(
+			"/api/crash/projects/01938a6b-cdef-7000-8000-000000000000",
+			Some(&app.fixtures.org_a.member),
+			json!({"name": "Updated Name"}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Updating nonexistent project should return 404"
+	);
+}
+
+#[tokio::test]
+async fn update_project_rejects_empty_name() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "update-project-empty-name-test").await;
+
+	let response = app
+		.patch(
+			&format!("/api/crash/projects/{}", project_id),
+			Some(&app.fixtures.org_a.member),
+			json!({"name": ""}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::BAD_REQUEST,
+		"Update project with empty name should return 400"
+	);
+}
+
+// ============================================================================
+// Delete Project Tests
+// ============================================================================
+
+#[tokio::test]
+async fn delete_project_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-project-auth-test").await;
+
+	let response = app
+		.delete(&format!("/api/crash/projects/{}", project_id), None)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Delete project without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn delete_project_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-project-membership-test").await;
+
+	// User from org_b trying to delete project in org_a
+	let response = app
+		.delete(
+			&format!("/api/crash/projects/{}", project_id),
+			Some(&app.fixtures.org_b.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to delete project in another org"
+	);
+}
+
+#[tokio::test]
+async fn delete_project_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-project-success-test").await;
+
+	let response = app
+		.delete(
+			&format!("/api/crash/projects/{}", project_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NO_CONTENT,
+		"Org member should be able to delete project"
+	);
+
+	// Verify project is gone
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}", project_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_project_returns_404_for_nonexistent_project() {
+	let app = TestApp::new().await;
+
+	let response = app
+		.delete(
+			"/api/crash/projects/01938a6b-cdef-7000-8000-000000000000",
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Deleting nonexistent project should return 404"
+	);
+}
