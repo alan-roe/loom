@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Loom Agent Guidelines
 
 ## Specifications
@@ -28,6 +32,7 @@ Use cargo for quick iteration during development. Slower than nix on clean build
 - **Test single:** `cargo test -p loom-<crate> <test_name>` (e.g., `cargo test -p loom-core test_agent`)
 - **Lint:** `cargo clippy --workspace -- -D warnings`
 - **Format:** `cargo fmt --all`
+- **Auto-fix:** `make fix` (clippy --fix + fmt)
 - **Check all:** `make check` (format + lint + build + test)
 
 ### Web
@@ -77,6 +82,7 @@ Deployments happen automatically via `git push` to the `trunk` branch. The produ
 ## Local Testing
 Before deploying, test changes locally to verify behavior:
 
+- **Environment:** Copy `.env.example` to `.env` for local dev config (loaded by devenv)
 - **Run server on alternate port:** `LOOM_SERVER_PORT=9090 LOOM_SERVER_DB_PATH=/tmp/loom-test.db ./target/release/loom-server`
 - **Dev mode (auto-auth):** Add `LOOM_SERVER_AUTH_DEV_MODE=1` for testing without real auth
 - **Test against local:** `curl http://localhost:9090/health`
@@ -110,6 +116,8 @@ Weavers run in the `loom-weavers` namespace:
 
 ## Architecture
 Rust workspace with 30+ crates under `crates/`. Key crates: `loom-core` (agent logic), `loom-server` (HTTP API), `loom-thread` (conversation state), `loom-llm-*` (LLM providers), `loom-tools` (agent tools), `loom-auth*` (authentication). Web frontend in `web/loom-web` (SvelteKit + Tailwind). SQLite database (`sqlx`). Dev environment via `devenv.nix`. Infra in `infra/` (Nix/K8s).
+
+**LLM Proxy:** Server-side proxy architecture - API keys never leave the server. Clients use `ProxyLlmClient` → loom-server `/proxy/{provider}/complete|stream` → actual LLM provider. See `loom-llm-proxy` crate.
 
 **Routes:** Use `PublicRouter` for unauthenticated routes, `AuthedRouter` for protected routes (see `typed_router.rs`). If unsure, ask. When adding/modifying routes, update authz tests in `tests/authz_*_tests.rs`.
 
@@ -190,6 +198,6 @@ if is_rtl(locale) {
 Arabic (`ar`) and other RTL locales require `dir="rtl"` on HTML elements. Use `loom_i18n::is_rtl()` to check.
 
 
-## 
+## Design Patterns
 
-- When multiple code paths do similar things with slight variations, create a shared service with a request struct that cpatures the variations, rather than having each caller implemnt its own logic.
+- When multiple code paths do similar things with slight variations, create a shared service with a request struct that captures the variations, rather than having each caller implement its own logic.
