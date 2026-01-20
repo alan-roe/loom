@@ -17,6 +17,18 @@ pub enum CrashServerError {
 	#[error("event not found: {0}")]
 	EventNotFound(String),
 
+	#[error("API key not found: {0}")]
+	ApiKeyNotFound(String),
+
+	#[error("API key revoked")]
+	ApiKeyRevoked,
+
+	#[error("invalid API key")]
+	InvalidApiKey,
+
+	#[error("failed to hash API key")]
+	ApiKeyHash,
+
 	#[error("database error: {0}")]
 	Database(#[from] sqlx::Error),
 
@@ -31,6 +43,9 @@ pub enum CrashServerError {
 
 	#[error("parse error: {0}")]
 	Parse(String),
+
+	#[error("symbolication error: {0}")]
+	Symbolication(String),
 }
 
 /// Result type for crash server operations.

@@ -28,6 +28,7 @@ use loom_crons_core::{
 	truncate_output, CheckIn, CheckInId, CheckInSource, CheckInStatus, CronStreamEvent, Monitor,
 	MonitorHealth, MonitorId, MonitorSchedule, MonitorState, MonitorStatus, OrgId,
 };
+use loom_server_audit::{AuditEventType, AuditLogBuilder, UserId as AuditUserId};
 use loom_server_auth::types::OrgId as AuthOrgId;
 use loom_server_crons::{calculate_next_expected, CronsRepository};
 
@@ -699,6 +700,19 @@ pub async fn create_monitor(
 
 	info!(monitor_id = %monitor.id, slug = %monitor.slug, "Monitor created");
 
+	state.audit_service.log(
+		AuditLogBuilder::new(AuditEventType::CronMonitorCreated)
+			.actor(AuditUserId::new(current_user.user.id.into_inner()))
+			.resource("cron_monitor", monitor.id.to_string())
+			.details(serde_json::json!({
+				"org_id": monitor.org_id.to_string(),
+				"slug": monitor.slug.clone(),
+				"name": monitor.name.clone(),
+				"schedule": format!("{:?}", monitor.schedule),
+			}))
+			.build(),
+	);
+
 	let ping_url = format!("{}/ping/{}", state.base_url, ping_key);
 
 	(
@@ -810,6 +824,18 @@ pub async fn delete_monitor(
 	}
 
 	info!(monitor_id = %monitor.id, "Monitor deleted");
+
+	state.audit_service.log(
+		AuditLogBuilder::new(AuditEventType::CronMonitorDeleted)
+			.actor(AuditUserId::new(current_user.user.id.into_inner()))
+			.resource("cron_monitor", monitor.id.to_string())
+			.details(serde_json::json!({
+				"org_id": monitor.org_id.to_string(),
+				"slug": monitor.slug.clone(),
+				"name": monitor.name.clone(),
+			}))
+			.build(),
+	);
 
 	StatusCode::NO_CONTENT.into_response()
 }

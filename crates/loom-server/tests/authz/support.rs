@@ -276,6 +276,26 @@ impl TestApp {
 			.await
 	}
 
+	/// POST with a custom header (e.g., for API key auth)
+	pub async fn post_with_header(
+		&self,
+		path: &str,
+		header_name: &str,
+		header_value: &str,
+		body: impl Serialize,
+	) -> Response<Body> {
+		let builder = Request::builder()
+			.method(Method::POST)
+			.uri(path)
+			.header("content-type", "application/json")
+			.header(header_name, header_value);
+
+		let request_body = Body::from(serde_json::to_string(&body).unwrap());
+		let request = builder.body(request_body).unwrap();
+
+		self.router.clone().oneshot(request).await.unwrap()
+	}
+
 	async fn request<T: Serialize>(
 		&self,
 		method: Method,

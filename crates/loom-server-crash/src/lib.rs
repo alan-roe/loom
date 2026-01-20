@@ -9,11 +9,18 @@
 //! - Repository layer for database operations
 //! - Issue fingerprinting and grouping
 //! - SSE broadcasting for real-time updates
+//! - API key hashing and verification
 
+pub mod api_key;
 pub mod error;
 pub mod repository;
 pub mod sse;
+pub mod symbolicate;
 
+pub use api_key::{
+	generate_api_key, hash_api_key, verify_api_key, KEY_PREFIX_ADMIN, KEY_PREFIX_CAPTURE,
+};
 pub use error::{CrashServerError, Result};
 pub use repository::{CrashRepository, SqliteCrashRepository};
 pub use sse::{CrashBroadcaster, CrashBroadcasterConfig, CrashStreamEvent};
+pub use symbolicate::SymbolicationService;

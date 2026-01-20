@@ -137,14 +137,14 @@ impl Default for CrashEvent {
 }
 
 /// Stack trace containing multiple frames.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Stacktrace {
 	pub frames: Vec<Frame>,
 }
 
 /// A single stack frame.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Frame {
 	/// Function/method name

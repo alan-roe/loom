@@ -65,8 +65,11 @@ members = [
 	"crates/loom-server-analytics",
 	"crates/loom-analytics",
 	"crates/loom-crons-core",
+	"crates/loom-crons",
 	"crates/loom-server-crons",
 	"crates/loom-crash-core",
+	"crates/loom-crash-symbolicate",
+	"crates/loom-crash",
 	"crates/loom-server-crash",
 	"crates/loom-sessions-core",
 	"crates/loom-server-sessions",
@@ -173,6 +176,8 @@ loom-analytics-core = { path = "crates/loom-analytics-core" }
 loom-crons-core = { path = "crates/loom-crons-core" }
 loom-server-crons = { path = "crates/loom-server-crons" }
 loom-crash-core = { path = "crates/loom-crash-core" }
+loom-crash-symbolicate = { path = "crates/loom-crash-symbolicate" }
+loom-crash = { path = "crates/loom-crash" }
 loom-server-crash = { path = "crates/loom-server-crash" }
 loom-sessions-core = { path = "crates/loom-sessions-core" }
 loom-server-sessions = { path = "crates/loom-server-sessions" }

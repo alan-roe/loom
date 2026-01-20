@@ -404,10 +404,7 @@ async fn get_release_health_requires_auth() {
 	// No auth should return 401
 	let response = app
 		.get(
-			&format!(
-				"/api/app-sessions/releases/1.0.0?project_id={}",
-				project_id
-			),
+			&format!("/api/app-sessions/releases/1.0.0?project_id={}", project_id),
 			None,
 		)
 		.await;
@@ -428,10 +425,7 @@ async fn get_release_health_requires_org_membership() {
 	// User from org_b trying to get release health in org_a's project should be forbidden
 	let response = app
 		.get(
-			&format!(
-				"/api/app-sessions/releases/1.0.0?project_id={}",
-				project_id
-			),
+			&format!("/api/app-sessions/releases/1.0.0?project_id={}", project_id),
 			Some(&app.fixtures.org_b.member),
 		)
 		.await;

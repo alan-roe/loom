@@ -194,6 +194,44 @@ impl std::str::FromStr for Platform {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use proptest::prelude::*;
+
+	proptest! {
+		#[test]
+		fn session_id_roundtrip(uuid_bytes in any::<[u8; 16]>()) {
+			let uuid = Uuid::from_bytes(uuid_bytes);
+			let id = SessionId(uuid);
+			let s = id.to_string();
+			let parsed: SessionId = s.parse().unwrap();
+			prop_assert_eq!(id, parsed);
+		}
+
+		#[test]
+		fn session_status_roundtrip(status in prop_oneof![
+			Just(SessionStatus::Active),
+			Just(SessionStatus::Exited),
+			Just(SessionStatus::Crashed),
+			Just(SessionStatus::Abnormal),
+			Just(SessionStatus::Errored),
+		]) {
+			let s = status.to_string();
+			let parsed: SessionStatus = s.parse().unwrap();
+			prop_assert_eq!(status, parsed);
+		}
+
+		#[test]
+		fn platform_roundtrip(platform in prop_oneof![
+			Just(Platform::JavaScript),
+			Just(Platform::Node),
+			Just(Platform::Rust),
+			Just(Platform::Python),
+			Just(Platform::Other),
+		]) {
+			let s = platform.to_string();
+			let parsed: Platform = s.parse().unwrap();
+			prop_assert_eq!(platform, parsed);
+		}
+	}
 
 	#[test]
 	fn test_session_id_new() {
@@ -216,8 +254,14 @@ mod tests {
 
 	#[test]
 	fn test_session_status_parse() {
-		assert_eq!("active".parse::<SessionStatus>().unwrap(), SessionStatus::Active);
-		assert_eq!("crashed".parse::<SessionStatus>().unwrap(), SessionStatus::Crashed);
+		assert_eq!(
+			"active".parse::<SessionStatus>().unwrap(),
+			SessionStatus::Active
+		);
+		assert_eq!(
+			"crashed".parse::<SessionStatus>().unwrap(),
+			SessionStatus::Crashed
+		);
 	}
 
 	#[test]
@@ -228,7 +272,10 @@ mod tests {
 
 	#[test]
 	fn test_platform_parse() {
-		assert_eq!("javascript".parse::<Platform>().unwrap(), Platform::JavaScript);
+		assert_eq!(
+			"javascript".parse::<Platform>().unwrap(),
+			Platform::JavaScript
+		);
 		assert_eq!("rust".parse::<Platform>().unwrap(), Platform::Rust);
 	}
 }

@@ -153,6 +153,24 @@ pub enum AuditEventType {
 	AnalyticsApiKeyRevoked,
 	AnalyticsPersonMerged,
 	AnalyticsEventsExported,
+
+	// Crash analytics events
+	CrashProjectCreated,
+	CrashProjectDeleted,
+	CrashIssueResolved,
+	CrashIssueIgnored,
+	CrashIssueAssigned,
+	CrashIssueDeleted,
+	CrashSymbolsUploaded,
+	CrashSymbolsDeleted,
+	CrashReleaseCreated,
+
+	// Cron monitoring events
+	CronMonitorCreated,
+	CronMonitorUpdated,
+	CronMonitorDeleted,
+	CronMonitorPaused,
+	CronMonitorResumed,
 }
 
 impl fmt::Display for AuditEventType {
@@ -290,6 +308,24 @@ impl fmt::Display for AuditEventType {
 			AuditEventType::AnalyticsApiKeyRevoked => "analytics_api_key_revoked",
 			AuditEventType::AnalyticsPersonMerged => "analytics_person_merged",
 			AuditEventType::AnalyticsEventsExported => "analytics_events_exported",
+
+			// Crash analytics events
+			AuditEventType::CrashProjectCreated => "crash_project_created",
+			AuditEventType::CrashProjectDeleted => "crash_project_deleted",
+			AuditEventType::CrashIssueResolved => "crash_issue_resolved",
+			AuditEventType::CrashIssueIgnored => "crash_issue_ignored",
+			AuditEventType::CrashIssueAssigned => "crash_issue_assigned",
+			AuditEventType::CrashIssueDeleted => "crash_issue_deleted",
+			AuditEventType::CrashSymbolsUploaded => "crash_symbols_uploaded",
+			AuditEventType::CrashSymbolsDeleted => "crash_symbols_deleted",
+			AuditEventType::CrashReleaseCreated => "crash_release_created",
+
+			// Cron monitoring events
+			AuditEventType::CronMonitorCreated => "cron_monitor_created",
+			AuditEventType::CronMonitorUpdated => "cron_monitor_updated",
+			AuditEventType::CronMonitorDeleted => "cron_monitor_deleted",
+			AuditEventType::CronMonitorPaused => "cron_monitor_paused",
+			AuditEventType::CronMonitorResumed => "cron_monitor_resumed",
 		};
 		write!(f, "{s}")
 	}
@@ -363,7 +399,13 @@ impl AuditEventType {
 			| AuditEventType::EnvironmentUpdated
 			// Analytics events - normal operations
 			| AuditEventType::AnalyticsApiKeyCreated
-			| AuditEventType::AnalyticsEventsExported => AuditSeverity::Info,
+			| AuditEventType::AnalyticsEventsExported
+			// Crash analytics events - normal operations
+			| AuditEventType::CrashProjectCreated
+			| AuditEventType::CrashReleaseCreated
+			| AuditEventType::CrashSymbolsUploaded
+			// Cron monitoring events - normal operations
+			| AuditEventType::CronMonitorCreated => AuditSeverity::Info,
 
 			// Warning: Security-relevant failures
 			AuditEventType::LoginFailed
@@ -413,7 +455,19 @@ impl AuditEventType {
 			| AuditEventType::EnvironmentDeleted
 			// Analytics events - administrative/destructive actions
 			| AuditEventType::AnalyticsApiKeyRevoked
-			| AuditEventType::AnalyticsPersonMerged => AuditSeverity::Notice,
+			| AuditEventType::AnalyticsPersonMerged
+			// Crash analytics events - administrative/destructive actions
+			| AuditEventType::CrashProjectDeleted
+			| AuditEventType::CrashIssueResolved
+			| AuditEventType::CrashIssueIgnored
+			| AuditEventType::CrashIssueAssigned
+			| AuditEventType::CrashIssueDeleted
+			| AuditEventType::CrashSymbolsDeleted
+			// Cron monitoring events - administrative actions
+			| AuditEventType::CronMonitorUpdated
+			| AuditEventType::CronMonitorDeleted
+			| AuditEventType::CronMonitorPaused
+			| AuditEventType::CronMonitorResumed => AuditSeverity::Notice,
 
 			// Error: Operation failures
 			AuditEventType::LlmRequestFailed => AuditSeverity::Error,
@@ -761,7 +815,7 @@ mod tests {
 			assert_eq!(event, AuditEventType::AccessDenied);
 		}
 
-		const ALL_EVENT_TYPES: [AuditEventType; 71] = [
+		const ALL_EVENT_TYPES: [AuditEventType; 85] = [
 			AuditEventType::Login,
 			AuditEventType::Logout,
 			AuditEventType::LoginFailed,
@@ -835,6 +889,22 @@ mod tests {
 			AuditEventType::AnalyticsApiKeyRevoked,
 			AuditEventType::AnalyticsPersonMerged,
 			AuditEventType::AnalyticsEventsExported,
+			// Crash analytics events
+			AuditEventType::CrashProjectCreated,
+			AuditEventType::CrashProjectDeleted,
+			AuditEventType::CrashIssueResolved,
+			AuditEventType::CrashIssueIgnored,
+			AuditEventType::CrashIssueAssigned,
+			AuditEventType::CrashIssueDeleted,
+			AuditEventType::CrashSymbolsUploaded,
+			AuditEventType::CrashSymbolsDeleted,
+			AuditEventType::CrashReleaseCreated,
+			// Cron monitoring events
+			AuditEventType::CronMonitorCreated,
+			AuditEventType::CronMonitorUpdated,
+			AuditEventType::CronMonitorDeleted,
+			AuditEventType::CronMonitorPaused,
+			AuditEventType::CronMonitorResumed,
 		];
 
 		#[test]

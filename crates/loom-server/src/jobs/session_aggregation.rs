@@ -140,10 +140,7 @@ impl Job for SessionAggregationJob {
 				}
 
 				// Track unique users by distinct_id (or person_id if available)
-				let user_id = session
-					.person_id
-					.as_ref()
-					.unwrap_or(&session.distinct_id);
+				let user_id = session.person_id.as_ref().unwrap_or(&session.distinct_id);
 				unique_users.insert(user_id.clone());
 
 				if session.crashed {

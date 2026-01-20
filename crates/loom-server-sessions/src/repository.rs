@@ -8,9 +8,7 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use tracing::instrument;
 
-use loom_sessions_core::{
-	Session, SessionAggregate, SessionAggregateId, SessionId, SessionStatus,
-};
+use loom_sessions_core::{Session, SessionAggregate, SessionAggregateId, SessionId, SessionStatus};
 
 use crate::error::{Result, SessionsServerError};
 
@@ -21,12 +19,7 @@ pub trait SessionsRepository: Send + Sync {
 	async fn create_session(&self, session: &Session) -> Result<()>;
 	async fn get_session_by_id(&self, id: &SessionId) -> Result<Option<Session>>;
 	async fn update_session(&self, session: &Session) -> Result<()>;
-	async fn list_sessions(
-		&self,
-		project_id: &str,
-		limit: u32,
-		offset: u32,
-	) -> Result<Vec<Session>>;
+	async fn list_sessions(&self, project_id: &str, limit: u32, offset: u32) -> Result<Vec<Session>>;
 	async fn list_sessions_by_release(
 		&self,
 		project_id: &str,
@@ -118,7 +111,8 @@ impl TryFrom<SessionRow> for Session {
 	fn try_from(row: SessionRow) -> Result<Self> {
 		Ok(Session {
 			id: SessionId(
-				row.id
+				row
+					.id
 					.parse()
 					.map_err(|_| SessionsServerError::InvalidData("invalid session ID".into()))?,
 			),
@@ -143,9 +137,7 @@ impl TryFrom<SessionRow> for Session {
 				.map(|s| {
 					DateTime::parse_from_rfc3339(&s)
 						.map(|dt| dt.with_timezone(&Utc))
-						.map_err(|e| {
-							SessionsServerError::InvalidData(format!("invalid ended_at: {e}"))
-						})
+						.map_err(|e| SessionsServerError::InvalidData(format!("invalid ended_at: {e}")))
 				})
 				.transpose()?,
 			duration_ms: row.duration_ms.map(|d| d as u64),
@@ -195,7 +187,8 @@ impl TryFrom<AggregateRow> for SessionAggregate {
 	fn try_from(row: AggregateRow) -> Result<Self> {
 		Ok(SessionAggregate {
 			id: SessionAggregateId(
-				row.id
+				row
+					.id
 					.parse()
 					.map_err(|_| SessionsServerError::InvalidData("invalid aggregate ID".into()))?,
 			),
@@ -323,12 +316,7 @@ impl SessionsRepository for SqliteSessionsRepository {
 	}
 
 	#[instrument(skip(self), fields(project_id = %project_id))]
-	async fn list_sessions(
-		&self,
-		project_id: &str,
-		limit: u32,
-		offset: u32,
-	) -> Result<Vec<Session>> {
+	async fn list_sessions(&self, project_id: &str, limit: u32, offset: u32) -> Result<Vec<Session>> {
 		let rows = sqlx::query_as::<_, SessionRow>(
 			r#"
 			SELECT id, org_id, project_id, person_id, distinct_id,

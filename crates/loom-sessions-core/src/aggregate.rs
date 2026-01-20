@@ -95,8 +95,7 @@ impl SessionAggregate {
 	#[must_use]
 	pub fn crash_free_session_rate(&self) -> f64 {
 		if self.total_sessions > 0 {
-			((self.total_sessions - self.crashed_sessions) as f64 / self.total_sessions as f64)
-				* 100.0
+			((self.total_sessions - self.crashed_sessions) as f64 / self.total_sessions as f64) * 100.0
 		} else {
 			100.0
 		}
@@ -127,6 +126,18 @@ impl SessionAggregate {
 mod tests {
 	use super::*;
 	use chrono::TimeZone;
+	use proptest::prelude::*;
+
+	proptest! {
+		#[test]
+		fn session_aggregate_id_roundtrip(uuid_bytes in any::<[u8; 16]>()) {
+			let uuid = Uuid::from_bytes(uuid_bytes);
+			let id = SessionAggregateId(uuid);
+			let s = id.to_string();
+			let parsed: SessionAggregateId = s.parse().unwrap();
+			prop_assert_eq!(id, parsed);
+		}
+	}
 
 	fn create_test_aggregate() -> SessionAggregate {
 		SessionAggregate {

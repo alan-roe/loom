@@ -21,8 +21,8 @@ use chrono::{DateTime, Duration, Utc};
 use loom_crash_core::ProjectId;
 use loom_server_auth::types::OrgId as AuthOrgId;
 use loom_server_crash::CrashRepository;
-use loom_sessions_core::{Platform, ReleaseHealth, Session, SessionId, SessionStatus};
 use loom_server_sessions::SessionsRepository;
+use loom_sessions_core::{Platform, ReleaseHealth, Session, SessionId, SessionStatus};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
@@ -165,9 +165,7 @@ pub async fn start_session(
 	};
 
 	// Verify org membership
-	if let Err(response) =
-		verify_org_membership(&state, &project.org_id.0, &auth.user.id).await
-	{
+	if let Err(response) = verify_org_membership(&state, &project.org_id.0, &auth.user.id).await {
 		return response.into_response();
 	}
 
@@ -320,9 +318,7 @@ pub async fn end_session(
 	};
 
 	// Verify org membership
-	if let Err(response) =
-		verify_org_membership(&state, &project.org_id.0, &auth.user.id).await
-	{
+	if let Err(response) = verify_org_membership(&state, &project.org_id.0, &auth.user.id).await {
 		return response.into_response();
 	}
 
@@ -502,9 +498,7 @@ pub async fn list_sessions(
 	};
 
 	// Verify org membership
-	if let Err(response) =
-		verify_org_membership(&state, &project.org_id.0, &auth.user.id).await
-	{
+	if let Err(response) = verify_org_membership(&state, &project.org_id.0, &auth.user.id).await {
 		return response.into_response();
 	}
 
@@ -515,7 +509,10 @@ pub async fn list_sessions(
 	{
 		Ok(sessions) => {
 			let responses: Vec<SessionResponse> = sessions.into_iter().map(Into::into).collect();
-			Json(ListSessionsResponse { sessions: responses }).into_response()
+			Json(ListSessionsResponse {
+				sessions: responses,
+			})
+			.into_response()
 		}
 		Err(e) => {
 			tracing::error!(error = %e, "Failed to list sessions");
@@ -647,9 +644,7 @@ pub async fn list_release_health(
 	};
 
 	// Verify org membership
-	if let Err(response) =
-		verify_org_membership(&state, &project.org_id.0, &auth.user.id).await
-	{
+	if let Err(response) = verify_org_membership(&state, &project.org_id.0, &auth.user.id).await {
 		return response.into_response();
 	}
 
@@ -803,9 +798,7 @@ pub async fn get_release_health(
 	};
 
 	// Verify org membership
-	if let Err(response) =
-		verify_org_membership(&state, &project.org_id.0, &auth.user.id).await
-	{
+	if let Err(response) = verify_org_membership(&state, &project.org_id.0, &auth.user.id).await {
 		return response.into_response();
 	}
 

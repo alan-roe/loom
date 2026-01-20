@@ -981,6 +981,11 @@ pub fn create_router(state: AppState) -> Router {
 		.route("/ping/{key}", get(routes::crons::ping_success).post(routes::crons::ping_with_body))
 		.route("/ping/{key}/start", get(routes::crons::ping_start))
 		.route("/ping/{key}/fail", get(routes::crons::ping_fail))
+		// Crash SDK capture endpoint (public - uses API key auth in handler)
+		.route(
+			"/api/crash/capture/sdk",
+			post(routes::crash::capture_crash_with_api_key),
+		)
 		.build();
 
 	// Authenticated routes - require valid session/token
@@ -1285,6 +1290,7 @@ pub fn create_router(state: AppState) -> Router {
 			"/api/crash/capture",
 			post(routes::crash::capture_crash),
 		)
+		.route("/api/crash/batch", post(routes::crash::batch_capture_crash))
 		.route(
 			"/api/crash/projects",
 			get(routes::crash::list_projects).post(routes::crash::create_project),
@@ -1316,6 +1322,24 @@ pub fn create_router(state: AppState) -> Router {
 		.route(
 			"/api/crash/projects/{project_id}/releases/{version}",
 			get(routes::crash::get_release),
+		)
+		// Artifact routes (symbol upload)
+		.route(
+			"/api/crash/projects/{project_id}/artifacts",
+			get(routes::crash::list_artifacts).post(routes::crash::upload_artifacts),
+		)
+		.route(
+			"/api/crash/projects/{project_id}/artifacts/{artifact_id}",
+			get(routes::crash::get_artifact).delete(routes::crash::delete_artifact),
+		)
+		// API key routes
+		.route(
+			"/api/crash/projects/{project_id}/api-keys",
+			get(routes::crash::list_api_keys).post(routes::crash::create_api_key),
+		)
+		.route(
+			"/api/crash/projects/{project_id}/api-keys/{key_id}",
+			delete(routes::crash::revoke_api_key),
 		)
 		// App sessions routes (authenticated)
 		.route(

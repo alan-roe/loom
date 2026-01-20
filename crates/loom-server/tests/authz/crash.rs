@@ -947,6 +947,289 @@ async fn get_release_returns_404_for_nonexistent_version() {
 }
 
 // ============================================================================
+// Batch Capture Tests
+// ============================================================================
+
+#[tokio::test]
+async fn batch_capture_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "batch-auth-test").await;
+
+	// No auth should return 401
+	let response = app
+		.post(
+			"/api/crash/batch",
+			None,
+			json!({
+				"events": [{
+					"project_id": project_id,
+					"exception_type": "TypeError",
+					"exception_value": "Test error",
+					"stacktrace": {
+						"frames": [{
+							"function": "test",
+							"filename": "test.js",
+							"lineno": 1,
+							"in_app": true
+						}]
+					}
+				}]
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Batch capture without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn batch_capture_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "batch-membership-test").await;
+
+	// User from org_b trying to batch capture in org_a's project should fail
+	let response = app
+		.post(
+			"/api/crash/batch",
+			Some(&app.fixtures.org_b.member),
+			json!({
+				"events": [{
+					"project_id": project_id,
+					"exception_type": "TypeError",
+					"exception_value": "Test error",
+					"stacktrace": {
+						"frames": [{
+							"function": "test",
+							"filename": "test.js",
+							"lineno": 1,
+							"in_app": true
+						}]
+					}
+				}]
+			}),
+		)
+		.await;
+
+	// Batch returns 200 but individual events will have errors
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Batch capture returns 200 with individual errors"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+	// Verify the event failed due to membership
+	assert_eq!(result["error_count"], 1, "Should have one failed event");
+	assert_eq!(
+		result["success_count"], 0,
+		"Should have no successful events"
+	);
+}
+
+#[tokio::test]
+async fn batch_capture_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "batch-success-test").await;
+
+	let response = app
+		.post(
+			"/api/crash/batch",
+			Some(&app.fixtures.org_a.member),
+			json!({
+				"events": [
+					{
+						"project_id": project_id,
+						"exception_type": "TypeError",
+						"exception_value": "Error 1",
+						"stacktrace": {
+							"frames": [{
+								"function": "func1",
+								"filename": "test.js",
+								"lineno": 1,
+								"in_app": true
+							}]
+						}
+					},
+					{
+						"project_id": project_id,
+						"exception_type": "ReferenceError",
+						"exception_value": "Error 2",
+						"stacktrace": {
+							"frames": [{
+								"function": "func2",
+								"filename": "other.js",
+								"lineno": 42,
+								"in_app": true
+							}]
+						}
+					}
+				]
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Batch capture should succeed for org member"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+	assert_eq!(result["total"], 2, "Should have processed 2 events");
+	assert_eq!(result["success_count"], 2, "Both events should succeed");
+	assert_eq!(result["error_count"], 0, "Should have no errors");
+
+	// Verify results contain event details
+	let results = result["results"].as_array().unwrap();
+	assert!(results[0]["event_id"].is_string());
+	assert!(results[0]["issue_id"].is_string());
+	assert!(results[1]["event_id"].is_string());
+	assert!(results[1]["issue_id"].is_string());
+}
+
+#[tokio::test]
+async fn batch_capture_empty_events_returns_empty_result() {
+	let app = TestApp::new().await;
+
+	let response = app
+		.post(
+			"/api/crash/batch",
+			Some(&app.fixtures.org_a.member),
+			json!({
+				"events": []
+			}),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::OK);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+	assert_eq!(result["total"], 0);
+	assert_eq!(result["success_count"], 0);
+	assert_eq!(result["error_count"], 0);
+}
+
+#[tokio::test]
+async fn batch_capture_rejects_too_many_events() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "batch-limit-test").await;
+
+	// Create 101 events (over the 100 limit)
+	let events: Vec<serde_json::Value> = (0..101)
+		.map(|i| {
+			json!({
+				"project_id": project_id,
+				"exception_type": "Error",
+				"exception_value": format!("Error {}", i),
+				"stacktrace": {
+					"frames": [{
+						"function": "test",
+						"filename": "test.js",
+						"lineno": i,
+						"in_app": true
+					}]
+				}
+			})
+		})
+		.collect();
+
+	let response = app
+		.post(
+			"/api/crash/batch",
+			Some(&app.fixtures.org_a.member),
+			json!({ "events": events }),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::BAD_REQUEST,
+		"Batch with >100 events should be rejected"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+	assert!(
+		result["error"]
+			.as_str()
+			.unwrap()
+			.contains("batch_too_large"),
+		"Error should indicate batch too large"
+	);
+}
+
+#[tokio::test]
+async fn batch_capture_handles_mixed_success_and_failure() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "batch-mixed-test").await;
+
+	let response = app
+		.post(
+			"/api/crash/batch",
+			Some(&app.fixtures.org_a.member),
+			json!({
+				"events": [
+					{
+						"project_id": project_id,
+						"exception_type": "TypeError",
+						"exception_value": "Valid error",
+						"stacktrace": {
+							"frames": [{
+								"function": "test",
+								"filename": "test.js",
+								"lineno": 1,
+								"in_app": true
+							}]
+						}
+					},
+					{
+						"project_id": "invalid-project-id",
+						"exception_type": "Error",
+						"exception_value": "Should fail",
+						"stacktrace": {
+							"frames": [{
+								"function": "test",
+								"filename": "test.js",
+								"lineno": 1,
+								"in_app": true
+							}]
+						}
+					}
+				]
+			}),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::OK);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+	assert_eq!(result["total"], 2);
+	assert_eq!(result["success_count"], 1, "First event should succeed");
+	assert_eq!(result["error_count"], 1, "Second event should fail");
+
+	let results = result["results"].as_array().unwrap();
+	assert!(results[0]["success"].as_bool().unwrap());
+	assert!(!results[1]["success"].as_bool().unwrap());
+	assert!(results[1]["error"].is_string());
+}
+
+// ============================================================================
 // Release Auto-Creation via Crash Capture
 // ============================================================================
 
@@ -996,12 +1279,725 @@ async fn capture_crash_auto_creates_release() {
 	let (_, body) = response.into_parts();
 	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
 	let release: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-	assert_eq!(
-		release["crash_count"], 1,
-		"Release crash count should be 1"
-	);
+	assert_eq!(release["crash_count"], 1, "Release crash count should be 1");
 	assert_eq!(
 		release["new_issue_count"], 1,
 		"Release new_issue_count should be 1"
+	);
+}
+
+// ============================================================================
+// Artifact List Tests
+// ============================================================================
+
+#[tokio::test]
+async fn list_artifacts_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "artifacts-auth-test").await;
+
+	// No auth should return 401
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/artifacts", project_id),
+			None,
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"List artifacts without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn list_artifacts_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "artifacts-membership-test").await;
+
+	// User from org_b trying to list artifacts in org_a's project should be forbidden
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/artifacts", project_id),
+			Some(&app.fixtures.org_b.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to list artifacts in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn list_artifacts_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "artifacts-success-test").await;
+
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/artifacts", project_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to list artifacts"
+	);
+}
+
+#[tokio::test]
+async fn list_artifacts_returns_404_for_nonexistent_project() {
+	let app = TestApp::new().await;
+
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/artifacts", uuid::Uuid::new_v4()),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Listing artifacts for nonexistent project should return 404"
+	);
+}
+
+// ============================================================================
+// Get Artifact Tests
+// ============================================================================
+
+#[tokio::test]
+async fn get_artifact_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "get-artifact-auth-test").await;
+
+	// No auth should return 401
+	let response = app
+		.get(
+			&format!(
+				"/api/crash/projects/{}/artifacts/{}",
+				project_id,
+				uuid::Uuid::new_v4()
+			),
+			None,
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Get artifact without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn get_artifact_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "get-artifact-membership-test").await;
+
+	// User from org_b trying to get artifact in org_a's project should be forbidden
+	let response = app
+		.get(
+			&format!(
+				"/api/crash/projects/{}/artifacts/{}",
+				project_id,
+				uuid::Uuid::new_v4()
+			),
+			Some(&app.fixtures.org_b.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to get artifact in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn get_artifact_returns_404_for_nonexistent_artifact() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "get-artifact-404-test").await;
+
+	let response = app
+		.get(
+			&format!(
+				"/api/crash/projects/{}/artifacts/{}",
+				project_id,
+				uuid::Uuid::new_v4()
+			),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Getting nonexistent artifact should return 404"
+	);
+}
+
+// ============================================================================
+// Delete Artifact Tests
+// ============================================================================
+
+#[tokio::test]
+async fn delete_artifact_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-artifact-auth-test").await;
+
+	// No auth should return 401
+	let response = app
+		.delete(
+			&format!(
+				"/api/crash/projects/{}/artifacts/{}",
+				project_id,
+				uuid::Uuid::new_v4()
+			),
+			None,
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Delete artifact without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn delete_artifact_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-artifact-membership-test").await;
+
+	// User from org_b trying to delete artifact in org_a's project should be forbidden
+	let response = app
+		.delete(
+			&format!(
+				"/api/crash/projects/{}/artifacts/{}",
+				project_id,
+				uuid::Uuid::new_v4()
+			),
+			Some(&app.fixtures.org_b.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to delete artifact in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn delete_artifact_returns_404_for_nonexistent_artifact() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "delete-artifact-404-test").await;
+
+	let response = app
+		.delete(
+			&format!(
+				"/api/crash/projects/{}/artifacts/{}",
+				project_id,
+				uuid::Uuid::new_v4()
+			),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Deleting nonexistent artifact should return 404"
+	);
+}
+
+// ============================================================================
+// API Key Management Tests
+// ============================================================================
+
+/// Helper: Create an API key and return the raw key
+async fn create_test_api_key(app: &TestApp, project_id: &str, key_type: &str) -> (String, String) {
+	let response = app
+		.post(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			Some(&app.fixtures.org_a.member),
+			json!({
+				"name": "Test API Key",
+				"key_type": key_type
+			}),
+		)
+		.await;
+
+	assert_eq!(
+		response.status(),
+		StatusCode::CREATED,
+		"Failed to create test API key"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+	(
+		result["id"].as_str().unwrap().to_string(),
+		result["key"].as_str().unwrap().to_string(),
+	)
+}
+
+#[tokio::test]
+async fn create_api_key_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "api-key-auth-test").await;
+
+	// No auth should return 401
+	let response = app
+		.post(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			None,
+			json!({
+				"name": "Test Key",
+				"key_type": "capture"
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Create API key without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn create_api_key_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "api-key-membership-test").await;
+
+	// User from org_b trying to create API key in org_a's project should be forbidden
+	let response = app
+		.post(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			Some(&app.fixtures.org_b.member),
+			json!({
+				"name": "Test Key",
+				"key_type": "capture"
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to create API key in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn create_api_key_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "api-key-success-test").await;
+
+	let response = app
+		.post(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			Some(&app.fixtures.org_a.member),
+			json!({
+				"name": "Test Capture Key",
+				"key_type": "capture"
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::CREATED,
+		"Org member should be able to create API key"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+	assert!(result["id"].is_string());
+	assert!(result["key"].as_str().unwrap().starts_with("loom_crash_capture_"));
+	assert_eq!(result["key_type"], "capture");
+}
+
+#[tokio::test]
+async fn create_api_key_admin_type() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "api-key-admin-test").await;
+
+	let response = app
+		.post(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			Some(&app.fixtures.org_a.member),
+			json!({
+				"name": "Test Admin Key",
+				"key_type": "admin"
+			}),
+		)
+		.await;
+	assert_eq!(response.status(), StatusCode::CREATED);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+	assert!(result["key"].as_str().unwrap().starts_with("loom_crash_admin_"));
+	assert_eq!(result["key_type"], "admin");
+}
+
+#[tokio::test]
+async fn create_api_key_invalid_type_rejected() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "api-key-invalid-test").await;
+
+	let response = app
+		.post(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			Some(&app.fixtures.org_a.member),
+			json!({
+				"name": "Test Key",
+				"key_type": "invalid"
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::BAD_REQUEST,
+		"Invalid key type should be rejected"
+	);
+}
+
+#[tokio::test]
+async fn list_api_keys_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "list-api-keys-auth-test").await;
+
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			None,
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"List API keys without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn list_api_keys_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "list-api-keys-membership-test").await;
+
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			Some(&app.fixtures.org_b.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to list API keys in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn list_api_keys_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "list-api-keys-success-test").await;
+
+	// Create an API key first
+	let _ = create_test_api_key(&app, &project_id, "capture").await;
+
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"Org member should be able to list API keys"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let keys: Vec<serde_json::Value> = serde_json::from_slice(&body_bytes).unwrap();
+
+	assert!(!keys.is_empty(), "Should have at least one API key");
+	// Verify the key hash is NOT exposed
+	assert!(
+		keys[0].get("key_hash").is_none(),
+		"key_hash should not be exposed in list response"
+	);
+}
+
+#[tokio::test]
+async fn revoke_api_key_requires_auth() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "revoke-api-key-auth-test").await;
+	let (key_id, _) = create_test_api_key(&app, &project_id, "capture").await;
+
+	let response = app
+		.delete(
+			&format!("/api/crash/projects/{}/api-keys/{}", project_id, key_id),
+			None,
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"Revoke API key without auth should return 401"
+	);
+}
+
+#[tokio::test]
+async fn revoke_api_key_requires_org_membership() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "revoke-api-key-membership-test").await;
+	let (key_id, _) = create_test_api_key(&app, &project_id, "capture").await;
+
+	let response = app
+		.delete(
+			&format!("/api/crash/projects/{}/api-keys/{}", project_id, key_id),
+			Some(&app.fixtures.org_b.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::FORBIDDEN,
+		"Non-member should not be able to revoke API key in another org's project"
+	);
+}
+
+#[tokio::test]
+async fn revoke_api_key_succeeds_for_org_member() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "revoke-api-key-success-test").await;
+	let (key_id, _) = create_test_api_key(&app, &project_id, "capture").await;
+
+	let response = app
+		.delete(
+			&format!("/api/crash/projects/{}/api-keys/{}", project_id, key_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NO_CONTENT,
+		"Org member should be able to revoke API key"
+	);
+
+	// Verify the key is now revoked (shows in list with revoked_at)
+	let response = app
+		.get(
+			&format!("/api/crash/projects/{}/api-keys", project_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let keys: Vec<serde_json::Value> = serde_json::from_slice(&body_bytes).unwrap();
+
+	let revoked_key = keys.iter().find(|k| k["id"] == key_id);
+	assert!(
+		revoked_key.is_some() && revoked_key.unwrap()["revoked_at"].is_string(),
+		"Revoked key should have revoked_at timestamp"
+	);
+}
+
+#[tokio::test]
+async fn revoke_api_key_returns_404_for_nonexistent_key() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "revoke-api-key-404-test").await;
+
+	let response = app
+		.delete(
+			&format!(
+				"/api/crash/projects/{}/api-keys/{}",
+				project_id,
+				uuid::Uuid::new_v4()
+			),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"Revoking nonexistent API key should return 404"
+	);
+}
+
+// ============================================================================
+// SDK Capture with API Key Tests
+// ============================================================================
+
+#[tokio::test]
+async fn sdk_capture_requires_api_key() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "sdk-capture-no-key-test").await;
+
+	// No API key header should return 401
+	let response = app
+		.post(
+			"/api/crash/capture/sdk",
+			None,
+			json!({
+				"project_id": project_id,
+				"exception_type": "TypeError",
+				"exception_value": "Test error",
+				"stacktrace": {
+					"frames": [{
+						"function": "test",
+						"filename": "test.js",
+						"lineno": 1,
+						"in_app": true
+					}]
+				}
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"SDK capture without API key should return 401"
+	);
+}
+
+#[tokio::test]
+async fn sdk_capture_with_invalid_api_key() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "sdk-capture-invalid-key-test").await;
+
+	let response = app
+		.post_with_header(
+			"/api/crash/capture/sdk",
+			"x-crash-api-key",
+			"invalid_key_here",
+			json!({
+				"project_id": project_id,
+				"exception_type": "TypeError",
+				"exception_value": "Test error",
+				"stacktrace": {
+					"frames": [{
+						"function": "test",
+						"filename": "test.js",
+						"lineno": 1,
+						"in_app": true
+					}]
+				}
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"SDK capture with invalid API key should return 401"
+	);
+}
+
+#[tokio::test]
+async fn sdk_capture_with_valid_api_key() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "sdk-capture-valid-key-test").await;
+	let (_, raw_key) = create_test_api_key(&app, &project_id, "capture").await;
+
+	let response = app
+		.post_with_header(
+			"/api/crash/capture/sdk",
+			"x-crash-api-key",
+			&raw_key,
+			json!({
+				"project_id": project_id,
+				"exception_type": "TypeError",
+				"exception_value": "SDK captured error",
+				"stacktrace": {
+					"frames": [{
+						"function": "sdkHandler",
+						"filename": "sdk.js",
+						"lineno": 100,
+						"in_app": true
+					}]
+				}
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::OK,
+		"SDK capture with valid API key should succeed"
+	);
+
+	let (_, body) = response.into_parts();
+	let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+	let result: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+	assert!(result["event_id"].is_string());
+	assert!(result["issue_id"].is_string());
+}
+
+#[tokio::test]
+async fn sdk_capture_with_revoked_api_key() {
+	let app = TestApp::new().await;
+	let org_id = app.fixtures.org_a.org.id.to_string();
+	let project_id = create_test_project(&app, &org_id, "sdk-capture-revoked-key-test").await;
+	let (key_id, raw_key) = create_test_api_key(&app, &project_id, "capture").await;
+
+	// Revoke the key
+	let _ = app
+		.delete(
+			&format!("/api/crash/projects/{}/api-keys/{}", project_id, key_id),
+			Some(&app.fixtures.org_a.member),
+		)
+		.await;
+
+	// Try to use the revoked key
+	let response = app
+		.post_with_header(
+			"/api/crash/capture/sdk",
+			"x-crash-api-key",
+			&raw_key,
+			json!({
+				"project_id": project_id,
+				"exception_type": "TypeError",
+				"exception_value": "Should not capture",
+				"stacktrace": {
+					"frames": [{
+						"function": "test",
+						"filename": "test.js",
+						"lineno": 1,
+						"in_app": true
+					}]
+				}
+			}),
+		)
+		.await;
+	assert_eq!(
+		response.status(),
+		StatusCode::UNAUTHORIZED,
+		"SDK capture with revoked API key should return 401"
 	);
 }

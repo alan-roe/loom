@@ -220,6 +220,15 @@ mod tests {
 		}
 
 		#[test]
+		fn crash_api_key_id_roundtrip(uuid_bytes in any::<[u8; 16]>()) {
+			let uuid = Uuid::from_bytes(uuid_bytes);
+			let id = CrashApiKeyId(uuid);
+			let s = id.to_string();
+			let parsed: CrashApiKeyId = s.parse().unwrap();
+			prop_assert_eq!(id, parsed);
+		}
+
+		#[test]
 		fn valid_slug_starts_with_lowercase(s in "[a-z][a-z0-9_-]{2,49}") {
 			prop_assert!(CrashProject::validate_slug(&s));
 		}

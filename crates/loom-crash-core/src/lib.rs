@@ -136,3 +136,38 @@ impl FromStr for PersonId {
 		Ok(Self(Uuid::parse_str(s)?))
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use proptest::prelude::*;
+
+	proptest! {
+		#[test]
+		fn org_id_roundtrip(uuid_bytes in any::<[u8; 16]>()) {
+			let uuid = Uuid::from_bytes(uuid_bytes);
+			let id = OrgId(uuid);
+			let s = id.to_string();
+			let parsed: OrgId = s.parse().unwrap();
+			prop_assert_eq!(id, parsed);
+		}
+
+		#[test]
+		fn user_id_roundtrip(uuid_bytes in any::<[u8; 16]>()) {
+			let uuid = Uuid::from_bytes(uuid_bytes);
+			let id = UserId(uuid);
+			let s = id.to_string();
+			let parsed: UserId = s.parse().unwrap();
+			prop_assert_eq!(id, parsed);
+		}
+
+		#[test]
+		fn person_id_roundtrip(uuid_bytes in any::<[u8; 16]>()) {
+			let uuid = Uuid::from_bytes(uuid_bytes);
+			let id = PersonId(uuid);
+			let s = id.to_string();
+			let parsed: PersonId = s.parse().unwrap();
+			prop_assert_eq!(id, parsed);
+		}
+	}
+}

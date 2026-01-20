@@ -5,12 +5,12 @@
 
 pub mod admin;
 pub mod admin_anthropic;
-pub mod app_sessions;
 pub mod admin_flags;
 pub mod admin_jobs;
 pub mod admin_logs;
 pub mod analytics;
 pub mod api_keys;
+pub mod app_sessions;
 pub mod auth;
 pub mod bin;
 pub mod crash;
