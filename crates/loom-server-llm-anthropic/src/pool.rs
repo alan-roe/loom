@@ -18,7 +18,7 @@ use loom_cli_credentials::{
 use loom_common_core::{LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream};
 
 use serde::Serialize;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AnthropicAuth, OAuthClient, OAuthCredentials};
@@ -156,6 +156,7 @@ pub struct AnthropicPool {
 	credential_file: PathBuf,
 	model: String,
 	store: Arc<FileCredentialStore>,
+	shutdown_tx: broadcast::Sender<()>,
 }
 
 impl std::fmt::Debug for AnthropicPool {
@@ -245,6 +246,8 @@ impl AnthropicPool {
 			"AnthropicPool initialized"
 		);
 
+		let (shutdown_tx, _) = broadcast::channel(1);
+
 		Ok(Self {
 			accounts: RwLock::new(accounts),
 			state: Mutex::new(state),
@@ -252,6 +255,7 @@ impl AnthropicPool {
 			credential_file,
 			model,
 			store,
+			shutdown_tx,
 		})
 	}
 
@@ -273,6 +277,8 @@ impl AnthropicPool {
 
 		info!("Created empty AnthropicPool for dynamic account management");
 
+		let (shutdown_tx, _) = broadcast::channel(1);
+
 		Self {
 			accounts: RwLock::new(Vec::new()),
 			state: Mutex::new(state),
@@ -280,6 +286,7 @@ impl AnthropicPool {
 			credential_file,
 			model,
 			store,
+			shutdown_tx,
 		}
 	}
 
@@ -479,69 +486,83 @@ impl AnthropicPool {
 		interval: Duration,
 		threshold: Duration,
 	) -> tokio::task::JoinHandle<()> {
+		let mut shutdown_rx = self.shutdown_tx.subscribe();
+
 		tokio::spawn(async move {
 			let mut ticker = tokio::time::interval(interval);
 			ticker.tick().await;
 
 			loop {
-				ticker.tick().await;
-				debug!("Running proactive token refresh check");
+				tokio::select! {
+					_ = ticker.tick() => {
+						debug!("Running proactive token refresh check");
 
-				let account_ids: Vec<String> = {
-					let accounts = self.accounts.read().await;
-					accounts.iter().map(|a| a.id.clone()).collect()
-				};
-
-				for account_id in account_ids {
-					let should_refresh = {
-						let accounts = self.accounts.read().await;
-						if let Some(entry) = accounts.iter().find(|a| a.id == account_id) {
-							let creds = entry.oauth_client.current_credentials().await;
-							let now_ms = std::time::SystemTime::now()
-								.duration_since(std::time::UNIX_EPOCH)
-								.unwrap()
-								.as_millis() as u64;
-							let threshold_ms = threshold.as_millis() as u64;
-							creds.expires < now_ms + threshold_ms
-						} else {
-							false
-						}
-					};
-
-					if should_refresh {
-						debug!(account_id = %account_id, "Token expires within threshold, refreshing");
-
-						let result = {
+						let account_ids: Vec<String> = {
 							let accounts = self.accounts.read().await;
-							if let Some(entry) = accounts.iter().find(|a| a.id == account_id) {
-								Some(entry.oauth_client.get_access_token().await)
-							} else {
-								None
-							}
+							accounts.iter().map(|a| a.id.clone()).collect()
 						};
 
-						if let Some(Err(e)) = result {
-							warn!(account_id = %account_id, error = %e, "Token refresh failed, disabling account");
-
-							let index = {
+						for account_id in account_ids {
+							let should_refresh = {
 								let accounts = self.accounts.read().await;
-								accounts.iter().position(|a| a.id == account_id)
+								if let Some(entry) = accounts.iter().find(|a| a.id == account_id) {
+									let creds = entry.oauth_client.current_credentials().await;
+									let now_ms = std::time::SystemTime::now()
+										.duration_since(std::time::UNIX_EPOCH)
+										.unwrap()
+										.as_millis() as u64;
+									let threshold_ms = threshold.as_millis() as u64;
+									creds.expires < now_ms + threshold_ms
+								} else {
+									false
+								}
 							};
 
-							if let Some(index) = index {
-								let mut state = self.state.lock().await;
-								if index < state.runtimes.len() {
-									state.runtimes[index].status = AccountStatus::Disabled;
-									state.runtimes[index].last_error = Some(format!("Token refresh failed: {e}"));
+							if should_refresh {
+								debug!(account_id = %account_id, "Token expires within threshold, refreshing");
+
+								let result = {
+									let accounts = self.accounts.read().await;
+									if let Some(entry) = accounts.iter().find(|a| a.id == account_id) {
+										Some(entry.oauth_client.get_access_token().await)
+									} else {
+										None
+									}
+								};
+
+								if let Some(Err(e)) = result {
+									warn!(account_id = %account_id, error = %e, "Token refresh failed, disabling account");
+
+									let index = {
+										let accounts = self.accounts.read().await;
+										accounts.iter().position(|a| a.id == account_id)
+									};
+
+									if let Some(index) = index {
+										let mut state = self.state.lock().await;
+										if index < state.runtimes.len() {
+											state.runtimes[index].status = AccountStatus::Disabled;
+											state.runtimes[index].last_error = Some(format!("Token refresh failed: {e}"));
+										}
+									}
+								} else {
+									debug!(account_id = %account_id, "Token refreshed successfully");
 								}
 							}
-						} else {
-							debug!(account_id = %account_id, "Token refreshed successfully");
 						}
+					}
+					_ = shutdown_rx.recv() => {
+						info!("Token refresh task received shutdown signal");
+						break;
 					}
 				}
 			}
 		})
+	}
+
+	/// Signal shutdown to the token refresh task.
+	pub fn shutdown(&self) {
+		let _ = self.shutdown_tx.send(());
 	}
 
 	/// Select an available account index.

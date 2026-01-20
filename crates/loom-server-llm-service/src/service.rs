@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use loom_common_core::{LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream};
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use loom_server_llm_anthropic::{
 	AnthropicClient, AnthropicConfig, AnthropicPool, AnthropicPoolConfig, MemoryCredentialStore,
@@ -62,6 +63,12 @@ impl AnthropicClientWrapper {
 			AnthropicClientWrapper::Pool(p) => p.complete_streaming(request).await,
 		}
 	}
+
+	fn shutdown(&self) {
+		if let AnthropicClientWrapper::Pool(p) = self {
+			p.shutdown();
+		}
+	}
 }
 
 /// Default model for Anthropic when client sends "default".
@@ -91,8 +98,7 @@ pub struct LlmService {
 	vertex_model: String,
 	zai_client: Option<Arc<ZaiClient>>,
 	zai_model: String,
-	#[allow(dead_code)] // Stored for future graceful shutdown
-	refresh_task_handle: Option<tokio::task::JoinHandle<()>>,
+	refresh_task_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl LlmService {
@@ -285,7 +291,7 @@ impl LlmService {
 			vertex_model,
 			zai_client,
 			zai_model,
-			refresh_task_handle,
+			refresh_task_handle: Mutex::new(refresh_task_handle),
 		})
 	}
 
@@ -378,6 +384,31 @@ impl LlmService {
 		match &self.anthropic_client {
 			Some(AnthropicClientWrapper::Pool(pool)) => Some(pool.account_details().await),
 			_ => None,
+		}
+	}
+
+	/// Gracefully shutdown the LLM service.
+	///
+	/// This signals the token refresh task to stop and waits for it to complete
+	/// with a timeout.
+	pub async fn shutdown(&self) {
+		// Signal Anthropic pool to stop refresh task
+		if let Some(client) = &self.anthropic_client {
+			client.shutdown();
+		}
+
+		// Wait for refresh task to complete (with timeout)
+		let handle = {
+			let mut guard = self.refresh_task_handle.lock().await;
+			guard.take()
+		};
+
+		if let Some(handle) = handle {
+			match tokio::time::timeout(Duration::from_secs(5), handle).await {
+				Ok(Ok(())) => info!("Token refresh task shut down cleanly"),
+				Ok(Err(e)) => warn!(error = %e, "Token refresh task panicked during shutdown"),
+				Err(_) => warn!("Token refresh task shutdown timed out after 5 seconds"),
+			}
 		}
 	}
 

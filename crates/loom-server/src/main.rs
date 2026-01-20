@@ -266,6 +266,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		tracing::error!(error = %e, "Failed to start job scheduler");
 	}
 
+	// Save reference to LLM service for graceful shutdown
+	let llm_service = state.llm_service.clone();
+
 	let app = create_router(state)
 		.layer(TraceLayer::new_for_http())
 		.layer(
@@ -290,6 +293,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		}
 		_ = tokio::signal::ctrl_c() => {
 			tracing::info!("Received shutdown signal");
+
+			// Shutdown LLM service (token refresh task)
+			if let Some(ref llm) = llm_service {
+				tracing::info!("Shutting down LLM service...");
+				llm.shutdown().await;
+			}
+
+			// Shutdown job scheduler
 			tracing::info!("Shutting down job scheduler...");
 			scheduler.shutdown().await;
 		}

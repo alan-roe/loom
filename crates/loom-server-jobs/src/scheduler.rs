@@ -159,7 +159,11 @@ impl JobScheduler {
 
 		let mut handles = self.handles.lock().await;
 		for handle in handles.drain(..) {
-			let _ = handle.await;
+			match tokio::time::timeout(Duration::from_secs(10), handle).await {
+				Ok(Ok(())) => {}
+				Ok(Err(e)) => warn!(error = %e, "Job task panicked during shutdown"),
+				Err(_) => warn!("Job did not shut down within 10 second timeout"),
+			}
 		}
 
 		info!("Job scheduler shut down");
