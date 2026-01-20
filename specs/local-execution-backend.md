@@ -159,10 +159,12 @@ pub struct LocalConfig {
   - Write metadata to `.loom/metadata.json`
   - If `LOOM_REPO` env var in pod spec, `git clone` into workspace
   - Create tmux session: `tmux new-session -d -s weaver-{id} -c {workspace_dir}`
-  - Configure tmux logging: `tmux pipe-pane -t weaver-{id} "cat >> .loom/output.log"`
-  - Run loom CLI in tmux: `tmux send-keys -t weaver-{id} "LOOM_SERVER_URL={url} loom" Enter`
-  - Write tmux session PID to `.loom/pid`
+  - Configure tmux logging: `tmux pipe-pane -t weaver-{id} 'cat >> .loom/output.log'`
+  - Run loom CLI with exec (replaces shell): `tmux send-keys -t weaver-{id} "exec env LOOM_SERVER_URL={url} loom" Enter`
+  - Get pane PID: `tmux display-message -t weaver-{id} -p '#{pane_pid}'`
+  - Write pane PID to `.loom/pid`
   - Store tmux session name in `LocalWeaver` for later `exec_attach`
+  - **Note**: Using `exec` means the pane dies when loom exits (detectable via `#{pane_dead}`)
   - Return Pod with status.phase = "Running"
   - **Note**: Provisioner ignores the return value and polls via `get_pod` separately
 
@@ -171,9 +173,12 @@ pub struct LocalConfig {
 **When** `get_pod` is called
 **Then**
   - Parse WeaverId from pod name
-  - Read PID from `.loom/pid`
-  - Check if process is alive (`kill -0 $pid`)
-  - Map to phase: "Running" if alive, "Succeeded" if exited 0, "Failed" if exited non-zero
+  - Check tmux session exists: `tmux has-session -t weaver-{id}` (exit code 0 = exists)
+  - If session exists, check pane status: `tmux display-message -t weaver-{id} -p '#{pane_dead}'`
+  - Map to phase:
+    - Session exists AND pane alive → "Running"
+    - Session exists AND pane dead → "Succeeded" (loom exited cleanly via exec)
+    - Session missing → "Failed" (unexpected termination)
   - Return Pod with all required fields populated (see Minimum Pod Fields)
 
 ### List Weavers (implements `list_pods`)
@@ -415,7 +420,7 @@ k8s-openapi = { workspace = true }
 ├── weaver-{uuid7}/
 │   ├── .loom/
 │   │   ├── metadata.json    # Labels, annotations, timestamps
-│   │   ├── pid              # tmux server PID
+│   │   ├── pid              # tmux pane PID (loom process PID due to exec)
 │   │   └── output.log       # Captured output (via tmux pipe-pane)
 │   └── workspace/           # Git clone or working files
 ```
@@ -437,20 +442,58 @@ Command::new("tmux")
 
 // Enable logging via pipe-pane
 Command::new("tmux")
-    .args(["pipe-pane", "-t", &session_name, &format!("cat >> {}", log_path)])
+    .args(["pipe-pane", "-t", &session_name, &format!("cat >> '{}'", log_path)])
     .status()?;
 
-// Start loom CLI inside the session
+// Start loom CLI with exec (replaces shell, pane dies when loom exits)
 Command::new("tmux")
-    .args(["send-keys", "-t", &session_name, &format!("LOOM_SERVER_URL={} loom", server_url), "Enter"])
+    .args(["send-keys", "-t", &session_name,
+           &format!("exec env LOOM_SERVER_URL='{}' loom", server_url), "Enter"])
     .status()?;
+
+// Get pane PID for status tracking
+let output = Command::new("tmux")
+    .args(["display-message", "-t", &session_name, "-p", "#{pane_pid}"])
+    .output()?;
+let pane_pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
 // For exec_attach: spawn `tmux attach-session -t {session}` with PTY
 let pair = pty_system.openpty(PtySize::default())?;
 let cmd = CommandBuilder::new("tmux");
 cmd.args(["attach-session", "-t", &session_name]);
 let child = pair.slave.spawn_command(cmd)?;
-// pair.master returned as AttachedProcess
+// pair.master needs sync→async wrapper (see below)
+```
+
+### PTY Async Bridge
+
+portable-pty provides synchronous I/O, but `AttachedProcess` requires `AsyncRead`/`AsyncWrite`. Use `tokio::task::spawn_blocking` with channels:
+
+```rust
+struct PtyAsyncReader {
+    rx: mpsc::Receiver<Result<Vec<u8>, std::io::Error>>,
+    buffer: Vec<u8>,
+    pos: usize,
+}
+
+impl PtyAsyncReader {
+    fn new(mut reader: Box<dyn Read + Send>) -> Self {
+        let (tx, rx) = mpsc::channel(32);
+        tokio::task::spawn_blocking(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => { tx.blocking_send(Ok(buf[..n].to_vec())).ok(); }
+                    Err(e) => { tx.blocking_send(Err(e)).ok(); break; }
+                }
+            }
+        });
+        Self { rx, buffer: Vec::new(), pos: 0 }
+    }
+}
+// Implement AsyncRead for PtyAsyncReader...
+// Similar PtyAsyncWriter wraps sync Write → AsyncWrite
 ```
 
 ### Error Mapping
