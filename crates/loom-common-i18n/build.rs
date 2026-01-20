@@ -23,7 +23,11 @@ fn main() {
 		let out_mo_path = format!("{out_dir}/{locale}.mo");
 
 		println!("cargo:rerun-if-changed={po_path}");
-		println!("cargo:rerun-if-changed={precompiled_mo_path}");
+		// Only track the precompiled .mo if it exists, otherwise cargo will
+		// always consider the fingerprint stale and rebuild
+		if Path::new(&precompiled_mo_path).exists() {
+			println!("cargo:rerun-if-changed={precompiled_mo_path}");
+		}
 
 		if let Ok(status) = Command::new("msgfmt")
 			.args(["-o", &out_mo_path, &po_path])
