@@ -19,6 +19,7 @@ use loom_server_geoip::GeoIpService;
 use loom_server_github_app::{GithubAppClient, GithubAppConfig};
 use loom_server_jobs::{JobRepository, JobScheduler};
 use loom_server_k8s::{K8sClient, KubeClient};
+use loom_server_local::LocalClient;
 use loom_server_llm_service::LlmService;
 use loom_server_search_google_cse::CseClient;
 use loom_server_search_serper::SerperClient;
@@ -484,18 +485,36 @@ async fn initialize_weaver_infrastructure(config: &ServerConfig) -> WeaverInfras
 		};
 	}
 
-	let k8s_client: Arc<dyn K8sClient> = match KubeClient::new().await {
-		Ok(client) => Arc::new(client),
-		Err(e) => {
-			tracing::warn!(
-				error = %e,
-				"Failed to initialize K8s client, weaver provisioning disabled"
-			);
-			return WeaverInfrastructure {
-				provisioner: None,
-				webhook_dispatcher: None,
-				k8s_client: None,
-			};
+	let k8s_client: Arc<dyn K8sClient> = if config.weaver.backend == "local" {
+		let server_url = config.http.base_url.clone();
+		match LocalClient::new(server_url).await {
+			Ok(client) => Arc::new(client),
+			Err(e) => {
+				tracing::warn!(
+					error = %e,
+					"Failed to initialize local client, weaver provisioning disabled"
+				);
+				return WeaverInfrastructure {
+					provisioner: None,
+					webhook_dispatcher: None,
+					k8s_client: None,
+				};
+			}
+		}
+	} else {
+		match KubeClient::new().await {
+			Ok(client) => Arc::new(client),
+			Err(e) => {
+				tracing::warn!(
+					error = %e,
+					"Failed to initialize K8s client, weaver provisioning disabled"
+				);
+				return WeaverInfrastructure {
+					provisioner: None,
+					webhook_dispatcher: None,
+					k8s_client: None,
+				};
+			}
 		}
 	};
 
@@ -546,18 +565,33 @@ async fn initialize_weaver_infrastructure(config: &ServerConfig) -> WeaverInfras
 		server_url: config.http.base_url.clone(),
 	};
 
-	let kube_client = match KubeClient::new().await {
-		Ok(client) => Arc::new(client),
-		Err(e) => {
-			tracing::warn!(error = %e, "Failed to create provisioner K8s client");
-			return WeaverInfrastructure {
-				provisioner: None,
-				webhook_dispatcher: None,
-				k8s_client: Some(k8s_client),
-			};
+	let provisioner_client: Arc<dyn K8sClient> = if config.weaver.backend == "local" {
+		let server_url = config.http.base_url.clone();
+		match LocalClient::new(server_url).await {
+			Ok(client) => Arc::new(client),
+			Err(e) => {
+				tracing::warn!(error = %e, "Failed to create provisioner local client");
+				return WeaverInfrastructure {
+					provisioner: None,
+					webhook_dispatcher: None,
+					k8s_client: Some(k8s_client),
+				};
+			}
+		}
+	} else {
+		match KubeClient::new().await {
+			Ok(client) => Arc::new(client),
+			Err(e) => {
+				tracing::warn!(error = %e, "Failed to create provisioner K8s client");
+				return WeaverInfrastructure {
+					provisioner: None,
+					webhook_dispatcher: None,
+					k8s_client: Some(k8s_client),
+				};
+			}
 		}
 	};
-	let provisioner = Arc::new(Provisioner::new(kube_client, weaver_config));
+	let provisioner = Arc::new(Provisioner::new(provisioner_client, weaver_config));
 	let webhook_dispatcher = Arc::new(WebhookDispatcher::new(webhooks));
 
 	tracing::info!(

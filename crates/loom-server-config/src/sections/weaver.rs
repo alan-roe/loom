@@ -87,6 +87,8 @@ pub struct WeaverConfigLayer {
 	pub audit_batch_interval_ms: Option<u32>,
 	/// Audit buffer max size in bytes
 	pub audit_buffer_max_bytes: Option<u64>,
+	/// Execution backend: "k8s" (default) or "local"
+	pub backend: Option<String>,
 }
 
 impl std::fmt::Debug for WeaverConfigLayer {
@@ -108,6 +110,7 @@ impl std::fmt::Debug for WeaverConfigLayer {
 			.field("audit_image", &self.audit_image)
 			.field("audit_batch_interval_ms", &self.audit_batch_interval_ms)
 			.field("audit_buffer_max_bytes", &self.audit_buffer_max_bytes)
+			.field("backend", &self.backend)
 			.finish()
 	}
 }
@@ -164,6 +167,9 @@ impl WeaverConfigLayer {
 		if other.audit_buffer_max_bytes.is_some() {
 			self.audit_buffer_max_bytes = other.audit_buffer_max_bytes;
 		}
+		if other.backend.is_some() {
+			self.backend = other.backend;
+		}
 	}
 
 	/// Resolves this layer into a runtime configuration.
@@ -208,6 +214,7 @@ impl WeaverConfigLayer {
 				.unwrap_or_else(|| "ghcr.io/ghuntley/loom-audit-sidecar:latest".to_string()),
 			audit_batch_interval_ms: self.audit_batch_interval_ms.unwrap_or(100),
 			audit_buffer_max_bytes: self.audit_buffer_max_bytes.unwrap_or(256 * 1024 * 1024),
+			backend: self.backend.unwrap_or_else(|| "k8s".to_string()),
 		})
 	}
 }
@@ -238,6 +245,8 @@ pub struct WeaverConfig {
 	pub audit_batch_interval_ms: u32,
 	/// Audit buffer max size in bytes
 	pub audit_buffer_max_bytes: u64,
+	/// Execution backend: "k8s" (default) or "local"
+	pub backend: String,
 }
 
 impl std::fmt::Debug for WeaverConfig {
@@ -259,6 +268,7 @@ impl std::fmt::Debug for WeaverConfig {
 			.field("audit_image", &self.audit_image)
 			.field("audit_batch_interval_ms", &self.audit_batch_interval_ms)
 			.field("audit_buffer_max_bytes", &self.audit_buffer_max_bytes)
+			.field("backend", &self.backend)
 			.finish()
 	}
 }
@@ -282,6 +292,7 @@ impl Default for WeaverConfig {
 			audit_image: "ghcr.io/ghuntley/loom-audit-sidecar:latest".to_string(),
 			audit_batch_interval_ms: 100,
 			audit_buffer_max_bytes: 256 * 1024 * 1024,
+			backend: "k8s".to_string(),
 		}
 	}
 }

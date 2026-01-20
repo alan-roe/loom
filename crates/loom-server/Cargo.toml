@@ -28,6 +28,7 @@ loom-server-logs = { path = "../loom-server-logs" }
 loom-server-weaver = { path = "../loom-server-weaver" }
 loom-common-core = { path = "../loom-common-core" }
 loom-server-k8s = { path = "../loom-server-k8s" }
+loom-server-local = { path = "../loom-server-local" }
 loom-server-secrets = { path = "../loom-server-secrets" }
 loom-common-secret = { path = "../loom-common-secret" }
 loom-server-auth = { path = "../loom-server-auth" }

@@ -70,6 +70,7 @@ members = [
 	"crates/loom-server-crash",
 	"crates/loom-sessions-core",
 	"crates/loom-server-sessions",
+	"crates/loom-server-local",
 	]
 
 [workspace.package]
@@ -143,6 +144,7 @@ toml = "0.8"
 # Directories (for XDG)
 dirs = "5"
 
+
 # Secrets
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
@@ -177,6 +179,7 @@ loom-server-sessions = { path = "crates/loom-server-sessions" }
 loom-analytics = { path = "crates/loom-analytics" }
 loom-server-analytics = { path = "crates/loom-server-analytics" }
 loom-common-http = { path = "crates/loom-common-http" }
+loom-server-local = { path = "crates/loom-server-local" }
 
 # Build profile optimizations for faster development builds
 [profile.dev]
